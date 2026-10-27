@@ -1,0 +1,111 @@
+# Read aloud: every Claude Code reply on the workstation (Souko) is read aloud with Kokoro, a local
+# voice model that runs on the CPU, in full. A reply that arrives while another is being read waits
+# its turn; Repeat replays the whole last run; "From: <thread>." is said when the voice moves to another
+# thread. The name is one typed with N in the reader or on this page, else the "Thread: <title>" line
+# the project's assistant puts in its notes, else the session title or the first message. A reader window opens
+# by itself next to the Claude app while reading: the thread in a band of its own colour (Super+Alt+O or
+# a click opens it on claude.ai), what was asked, the sentence being
+# spoken highlighted, and an opacity slider; it closes when reading finishes and remembers where it
+# was dragged. Keys are Hyprland (Omarchy) binds, refused if already used; without Hyprland (Ubuntu
+# desktop) replies are still read aloud, with no keys or reader window. The Souko installer turns it
+# on (HISHO_READ_ALOUD=no skips); the venv and the voice model (sha256-checked) are downloaded on install.
+# Undo: `hisho addon remove read-aloud` (keeps the venv and model in ~/.local/share/hisho/read-aloud).
+name: read-aloud
+title: Read aloud
+description: Claude's replies read aloud on your workstation, with a reader window that follows along.
+version: 0.8.3
+you_need:
+  - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
+  - "Optional: Hyprland (Omarchy) for the keys and the reader window"
+host: workstation                  # Fleet.yaml's workstation (Souko), never the Core machine or a Hashira
+
+options:
+  voice: af_heart                  # Kokoro voice: af_heart, af_bella, am_michael, am_adam, bf_emma ...
+  speed: 100                       # % of normal speed
+  opacity: 90                      # reader window, % (the window's slider changes it too)
+  auto_open: true                  # open the reader window when reading starts
+  announce_thread: true            # say "From: <thread>." when the voice moves to another thread
+  auto_pause: true                 # opening the thread pauses reading; the pause key resumes
+  title_size: 2                    # thread name in the reader, times normal (1-4; needs kitty, else 1)
+  key_read: SUPER + ALT + T        # read the highlighted text (or clipboard); stops reading if it is
+  key_repeat: SUPER + ALT + R
+  key_stop: SUPER + ALT + X
+  key_mute: SUPER + ALT + M
+  key_reader: SUPER + ALT + V      # open/close the reader window
+  key_open: SUPER + ALT + O        # open the thread being read on claude.ai
+  key_pause: SUPER + ALT + P       # pause / resume (resumes from the start of the paused sentence)
+  key_rename: SUPER + ALT + N      # rename the thread: the reader comes forward with the name to edit
+  key_skip: SUPER + ALT + J        # skip to the next reply waiting (the skipped one stays for Repeat)
+  kokoro_onnx: 0.4.7
+schema:
+  voice: str
+  speed: int
+  opacity: int
+  auto_open: bool
+  announce_thread: bool
+  auto_pause: bool
+  title_size: int
+  key_read: str                    # "none" leaves a key out
+  key_repeat: str
+  key_stop: str
+  key_mute: str
+  key_reader: str
+  key_open: str
+  key_pause: str
+  key_rename: str
+  key_skip: str
+  kokoro_onnx: str
+requires:
+  commands: [python3, pw-cat, curl, sha256sum]
+
+services: []
+checks: []
+
+actions:
+  repeat:
+    label: Repeat last run
+    run: bin/say-it --repeat
+    confirm: false
+  stop:
+    label: Stop reading
+    run: bin/say-it --stop
+    confirm: false
+  mute:
+    label: Mute / unmute
+    run: bin/say-it --mute
+    confirm: false
+  skip:
+    label: Skip to the next reply
+    run: bin/say-it --skip dashboard
+    confirm: false
+  pause:
+    label: Pause / resume
+    run: bin/say-it --pause dashboard
+    confirm: false
+  name-thread:
+    label: Name the thread being read
+    params: [name]
+    text: [name]                   # as on your Threads tab; wins over everything else
+    run: bin/say-it --name-thread {name}
+    confirm: false
+  open-thread:
+    label: Open thread being read
+    run: bin/say-it --open-thread dashboard
+    confirm: false
+  test:
+    label: Test voice
+    run: bin/say-it --test
+    confirm: false
+  opacity:
+    label: Reader opacity (%)
+    params: [percent]
+    run: bin/say-it --opacity {percent}
+    confirm: false
+  status:
+    label: Status
+    run: bin/say-it --status
+    confirm: false
+
+links: []
+install: bin/install.sh
+uninstall: bin/uninstall.sh

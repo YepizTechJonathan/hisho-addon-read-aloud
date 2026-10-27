@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Read text aloud with the Kokoro voice used for Claude Code replies (Hisho add-on read-aloud).
+#   say-it "text"  /  cmd | say-it  /  say-it   (args, pipe, else selection or clipboard)
+#   say-it --repeat    read the last run again (all replies read back to back)
+#   say-it --stop      stop reading
+#   say-it --mute      mute/unmute Claude replies
+#   say-it --toggle    close the reader window if open, else open it
+#   say-it --open-thread  open the thread being read on claude.ai (pauses reading)
+#   say-it --pause     pause, or resume from the start of the paused sentence
+#   say-it --name-thread NAME   name the thread being read (else the last one read)
+#   say-it --rename    bring the reader forward with its rename prompt
+#   say-it --skip      end the reply being read, go to the next one waiting
+#   say-it --open      open the reader window (it also opens by itself when reading starts)
+#   say-it --opacity N reader window opacity, 20-100 (%)
+#   say-it --test      read a test sentence
+#   say-it --status    muted / reading / installed, as JSON
+#   say-it --view      the reader itself (runs inside that window)
+# Running plain say-it while it's speaking stops the speech.
+S="$(dirname "$(readlink -f "$0")")/../read_aloud.py"
+
+# Hisho's dashboard buttons arrive over SSH without the desktop session's
+# environment; find it so sound, notifications and the window still work.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+if [ -z "$WAYLAND_DISPLAY" ]; then
+  WAYLAND_DISPLAY="$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-[0-9] 2>/dev/null | head -1)")"
+  export WAYLAND_DISPLAY
+fi
+if [ -z "$HYPRLAND_INSTANCE_SIGNATURE" ]; then
+  HYPRLAND_INSTANCE_SIGNATURE="$(ls -t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | head -1)"
+  export HYPRLAND_INSTANCE_SIGNATURE
+fi
+
+case "$1" in
+  --repeat)  exec python3 "$S" repeat ;;
+  --stop)    exec python3 "$S" stop ;;
+  --mute)    exec python3 "$S" mute ;;
+  --toggle)  exec python3 "$S" toggle ;;
+  --open-thread) shift; exec python3 "$S" open-thread "$@" ;;
+  --pause)   shift; exec python3 "$S" pause "$@" ;;
+  --rename)  exec python3 "$S" rename ;;
+  --skip)    shift; exec python3 "$S" skip "$@" ;;
+  --name-thread) shift; exec python3 "$S" name-thread "$@" ;;
+  --open)    exec python3 "$S" open ;;
+  --opacity) exec python3 "$S" opacity "$2" ;;
+  --test)    exec python3 "$S" test ;;
+  --status)  exec python3 "$S" status ;;
+  --view)    exec python3 "$S" view ;;
+  *)         exec python3 "$S" say "$@" ;;
+esac
