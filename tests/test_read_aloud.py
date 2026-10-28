@@ -20,3 +20,8 @@ def ctx_for(addon):
 def test_manifest_is_valid_and_readme_matches(addon):
     assert addons.validate_manifest(addon.manifest) == []
     assert addon_store.readme_problems(HERE) == []
+
+
+def test_the_defaults_need_no_setup(addon):
+    """An option left at its default (fallback_output is "") must not stop install or update."""
+    assert [p for p in addons.problems(addon) if "is required" in p] == []

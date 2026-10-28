@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- `fallback_output` is optional: left empty (the default) it no longer stops install and update with "fallback_output is required".
+
 ## 0.9.0
 
 - A dead audio output no longer hangs reading silently. Before playing, the outputs are read from PipeWire (pw-dump): when the default one is in error (Dante without its clock, say) the voice reads on another and says so once, e.g. "Dante output isn't working. Reading on Arctis Nova Pro Wireless instead." New setting `fallback_output` (a PipeWire node name) picks that output; empty picks a USB or Bluetooth headset before HDMI.

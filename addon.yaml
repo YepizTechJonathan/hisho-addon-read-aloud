@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.9.0
+version: 0.9.1
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -46,7 +46,7 @@ schema:
   announce_thread: bool
   auto_pause: bool
   title_size: int
-  fallback_output: str
+  fallback_output: str?
   key_read: str                    # "none" leaves a key out
   key_repeat: str
   key_stop: str

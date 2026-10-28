@@ -32,7 +32,7 @@ hangs silently. The dashboard's **Status** shows the output in use and any outpu
   - `announce_thread` (bool, default `True`)
   - `auto_pause` (bool, default `True`)
   - `title_size` (int, default `2`)
-  - `fallback_output` (str, default ``)
+  - `fallback_output` (str, optional)
   - `key_read` (str, default `SUPER + ALT + T`)
   - `key_repeat` (str, default `SUPER + ALT + R`)
   - `key_stop` (str, default `SUPER + ALT + X`)
