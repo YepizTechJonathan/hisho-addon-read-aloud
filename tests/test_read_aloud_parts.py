@@ -1,6 +1,11 @@
 """Read aloud add-on: replies become sentences, the reader highlights and has an opacity slider, keys."""
 import json
 import os
+import subprocess
+import threading
+import time
+
+import pytest
 from importlib import util
 from pathlib import Path
 
@@ -19,6 +24,18 @@ def _load(name, path):
 ra = _load("read_aloud", HERE / "read_aloud.py")
 
 CONF = dict(ra.DEFAULTS)
+SINKS = ra.sinks   # the real one; tests never ask this machine's PipeWire
+SAMPLE = json.loads((HERE / "tests" / "pw-dump-sample.json").read_text())   # Souko with Dante broken
+
+
+@pytest.fixture(autouse=True)
+def _no_pipewire(monkeypatch):
+    monkeypatch.setattr(ra, "sinks", lambda dump=None: [])   # no pw-dump: the default output
+
+
+def _hand_over_at_once(monkeypatch):
+    """The fake players below have no pipe: hand each sentence over in one write."""
+    monkeypatch.setattr(ra.Speaker, "feed", lambda self, data: self.proc.stdin.write(data))
 
 
 def test_markdown_becomes_sentences_with_a_pause_per_line():
@@ -132,7 +149,8 @@ def test_a_reply_arriving_while_the_last_sentence_still_plays_waits_in_the_same_
 
         def wait(self):
             return 0
-    monkeypatch.setattr(ra.subprocess, "Popen", Player)   # also swallows enqueue's worker start
+    monkeypatch.setattr(ra.subprocess, "Popen", Player)
+    _hand_over_at_once(monkeypatch)   # also swallows enqueue's worker start
 
     ra.enqueue({"source": "A", "segments": ra.segments("First thread.")})
     worker = threading.Thread(target=ra.worker)
@@ -265,6 +283,7 @@ def test_pause_silences_at_once_and_resume_starts_that_sentence_again(tmp_path, 
         def wait(self, timeout=None):
             return 0
     monkeypatch.setattr(ra.subprocess, "Popen", Player)
+    _hand_over_at_once(monkeypatch)
     real_write = ra.Speaker.write
 
     def spy(self, status, pcm, tries=2):
@@ -341,6 +360,7 @@ def test_skip_ends_the_reply_and_goes_on_with_the_next_one_waiting(tmp_path, mon
         def wait(self, timeout=None):
             return 0
     monkeypatch.setattr(ra.subprocess, "Popen", Player)
+    _hand_over_at_once(monkeypatch)
     real_write = ra.Speaker.write
 
     def spy(self, status, pcm, tries=2):
@@ -567,3 +587,168 @@ def test_a_spot_hanging_off_an_edge_is_pulled_back_onto_its_monitor():
     x, y, w, h = ra.fit_on_screen(5300, 4400, 771, 639, MONITORS)    # centre on the first, bottom cut off
     assert (w, h) == (771, 639) and y + h <= 3568 + 1350 and x + w <= 3327 + 2400
     assert ra.fit_on_screen(4000, 4000, 771, 639, MONITORS) == (4000, 4000, 771, 639)   # fine as it is
+
+
+DANTE, HDMI = "dante_tx", "alsa_output.pci-0000_02_00.1.hdmi-stereo"
+ARCTIS = "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo"
+
+
+def _with(outputs, name, **change):
+    return [{**s, **change} if s["name"] == name else s for s in outputs]
+
+
+def test_the_outputs_come_from_pw_dump_with_the_default_and_its_error():
+    outputs = SINKS(SAMPLE)
+    assert [s["name"] for s in outputs] == [DANTE, HDMI, ARCTIS]          # sinks only, no sources
+    dante, hdmi, arctis = outputs
+    assert dante["default"] and dante["state"] == "error" and dante["label"] == "Dante"
+    assert dante["error"] == "Start error: Connection timed out"
+    assert hdmi["hdmi"] and not hdmi["usb"] and arctis["usb"] and arctis["label"] == "Arctis Nova Pro Wireless"
+
+
+def test_a_broken_default_output_falls_back_to_a_headset_before_hdmi():
+    outputs = SINKS(SAMPLE)
+    sink, why = ra.pick_output(outputs)
+    assert sink["name"] == ARCTIS and why == "Dante is in error (Start error: Connection timed out)"
+    assert ra.pick_output(outputs, fallback=HDMI)[0]["name"] == HDMI       # the setting is honoured
+    broken_hdmi = _with(outputs, HDMI, state="error")
+    assert ra.pick_output(broken_hdmi, fallback=HDMI)[0]["name"] == ARCTIS  # ... while it works
+    assert ra.pick_output(outputs, fallback="gone")[0]["name"] == ARCTIS
+    healthy = _with(outputs, DANTE, state="suspended", error="")
+    assert ra.pick_output(healthy) == (None, "default")                    # a working default is used
+    assert ra.pick_output(healthy, avoid={DANTE})[0]["name"] == ARCTIS     # ... unless it took no audio
+    assert ra.pick_output([s for s in outputs if not s["default"]])[1] == "no default output"
+    assert ra.pick_output([]) == (None, "default")                         # no pw-dump: try the default
+
+
+def test_with_no_working_output_there_is_nothing_to_play_on():
+    outputs = [{**s, "state": "error"} for s in SINKS(SAMPLE)]
+    assert ra.pick_output(outputs) == (None, "none")
+    assert ra.pick_output(SINKS(SAMPLE), avoid={ARCTIS, HDMI}) == (None, "none")
+
+
+def test_status_shows_the_output_in_use_and_any_in_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
+    monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    monkeypatch.setattr(ra, "settings", lambda: dict(ra.DEFAULTS))
+    s = ra.status(SINKS(SAMPLE))
+    assert s["output"] == "Arctis Nova Pro Wireless" and s["output_why"].startswith("Dante is in error")
+    assert s["outputs_in_error"] == ["Dante: Start error: Connection timed out"]
+    assert ra.status([])["output"] == "default" and ra.status([])["outputs_in_error"] == []
+
+
+def _real_players(monkeypatch, deaf):
+    """pw-cat stand-ins that are real processes: `sleep` never reads its pipe (an output that
+    takes no audio), `cat` takes it all. deaf(cmd) says which one a command line gets."""
+    real, made = subprocess.Popen, []
+
+    def popen(cmd, **k):
+        if cmd[0] != "pw-cat":
+            return real(["true"])
+        p = real(["sleep", "30"] if deaf(cmd) else ["cat"], stdin=subprocess.PIPE,
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        made.append((cmd, p))
+        return p
+    monkeypatch.setattr(ra.subprocess, "Popen", popen)
+    return made
+
+
+def _speaker_env(tmp_path, monkeypatch, outputs):
+    for name, value in {"STATE": tmp_path, "PAUSED": tmp_path / "paused", "NOW": tmp_path / "now.json",
+                        "QUEUE": tmp_path / "queue"}.items():
+        monkeypatch.setattr(ra, name, str(value))
+    monkeypatch.setattr(ra, "STALL", 0.5)
+    monkeypatch.setattr(ra, "sinks", lambda dump=None: outputs)
+    told = []
+    monkeypatch.setattr(ra, "notify", lambda msg, *a: told.append(msg))
+    return told
+
+
+class _Pcm(bytes):
+    def tobytes(self):
+        return bytes(self)
+
+
+def _in_thread(fn):
+    """Run fn; fail (instead of hanging the tests) if it doesn't return within 15 s."""
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001 - handed back to the test
+            box["error"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(15)
+    assert not t.is_alive(), "hung"
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def test_a_player_that_takes_no_audio_is_dropped_and_the_sentence_said_again_elsewhere(tmp_path, monkeypatch):
+    """What happened with Dante: pw-cat took no audio, its pipe filled, the reader hung for good."""
+    healthy = _with(SINKS(SAMPLE), DANTE, state="suspended", error="")   # looks fine, plays nothing
+    told = _speaker_env(tmp_path, monkeypatch, healthy)
+    made = _real_players(monkeypatch, deaf=lambda cmd: "--target" not in cmd)   # the default is dead
+    speaker = ra.Speaker()
+    status = {"segments": [{"s": "Hello.", "nl": True}], "current": 0}
+    _in_thread(lambda: speaker.write(status, _Pcm(b"\0" * 400_000)))   # more than a pipe holds
+
+    (first_cmd, first), (second_cmd, second) = made
+    assert "--target" not in first_cmd and first.poll() is not None      # killed and reaped
+    assert second_cmd[second_cmd.index("--target") + 1] == ARCTIS
+    assert told == ["Dante output isn't working. Reading on Arctis Nova Pro Wireless instead."]
+    log = (tmp_path / "read-aloud.log").read_text()
+    assert "player stalled on dante_tx" in log and "reading on Arctis Nova Pro Wireless" in log
+    _in_thread(speaker.close)
+    assert second.poll() is not None
+
+
+def test_a_short_last_sentence_left_in_a_dead_players_pipe_is_said_again(tmp_path, monkeypatch):
+    healthy = _with(SINKS(SAMPLE), DANTE, state="suspended", error="")
+    _speaker_env(tmp_path, monkeypatch, healthy)
+    made = _real_players(monkeypatch, deaf=lambda cmd: "--target" not in cmd)
+    speaker = ra.Speaker()
+    _in_thread(lambda: speaker.write({"segments": [{"s": "Hi.", "nl": True}], "current": 0}, _Pcm(b"\0" * 4800)))
+    assert len(made) == 1                                                  # it fitted in the pipe
+    _in_thread(lambda: [time.sleep(0.05) for _ in iter(speaker.busy, False)])
+    assert len(made) == 2 and "--target" in made[1][0] and made[0][1].poll() is not None
+    _in_thread(speaker.close)
+
+
+def test_with_no_output_left_the_run_stops_and_is_kept_for_repeat(tmp_path, monkeypatch):
+    import sys
+    import types
+    broken = [{**s, "state": "error"} for s in SINKS(SAMPLE)]
+    state = tmp_path / "state"
+    for name, value in {"STATE": state, "QUEUE": state / "queue", "RUN": state / "last-run.jsonl",
+                        "NOW": state / "now.json", "LOCK": state / "worker.lock", "PAUSED": state / "paused",
+                        "PIDFILE": state / "worker.pid", "LAST_THREAD": state / "last-thread"}.items():
+        monkeypatch.setattr(ra, name, str(value))
+    monkeypatch.setattr(ra, "settings", lambda: {**ra.DEFAULTS, "auto_open": False})
+    monkeypatch.setattr(ra, "sinks", lambda dump=None: broken)
+    told = []
+    monkeypatch.setattr(ra, "notify", lambda msg, *a: told.append(msg))
+    monkeypatch.setattr(ra.signal, "signal", lambda *a: None)
+    monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(Kokoro=lambda *a: None))
+    made = _real_players(monkeypatch, deaf=lambda cmd: False)
+    ra.enqueue({"source": "A", "segments": ra.segments("One.")})
+    ra.enqueue({"source": "B", "segments": ra.segments("Two.")})
+    _in_thread(ra.worker)
+
+    assert made == [] and told == ["No working audio output"]
+    assert ra.queued() == [] and not os.path.exists(ra.NOW) and not os.path.exists(ra.PIDFILE)
+    assert [i["source"] for i in ra.run_items()] == ["A", "B"]   # kept: Repeat reads them
+    log = (state / "read-aloud.log").read_text()
+    assert "no working audio output (Dante Start error" in log and "reading stopped" in log
+
+
+def test_close_never_waits_forever_on_a_stuck_player(tmp_path, monkeypatch):
+    _speaker_env(tmp_path, monkeypatch, [])
+    made = _real_players(monkeypatch, deaf=lambda cmd: True)
+    speaker = ra.Speaker()
+    _in_thread(speaker.close)                       # stdin closed, `sleep` ignores it: killed
+    assert made[0][1].poll() is not None

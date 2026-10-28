@@ -1,0 +1,124 @@
+[
+ {
+  "id": 31,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "error",
+   "error": "Start error: Connection timed out",
+   "props": {
+    "node.name": "dante_tx",
+    "node.description": "Dante",
+    "device.api": "alsa",
+    "media.class": "Audio/Sink",
+    "api.alsa.path": "dante"
+   }
+  }
+ },
+ {
+  "id": 32,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "error",
+   "error": "Start error: Connection timed out",
+   "props": {
+    "node.name": "dante_rx",
+    "node.description": "Dante receive",
+    "device.api": "alsa",
+    "media.class": "Audio/Source",
+    "api.alsa.path": "dante"
+   }
+  }
+ },
+ {
+  "id": 43,
+  "type": "PipeWire:Interface:Metadata",
+  "props": {
+   "metadata.name": "default"
+  },
+  "metadata": [
+   {
+    "subject": 0,
+    "key": "default.configured.audio.sink",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "dante_tx"
+    }
+   },
+   {
+    "subject": 0,
+    "key": "default.configured.audio.source",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "dante_rx"
+    }
+   },
+   {
+    "subject": 0,
+    "key": "default.audio.sink",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "dante_tx"
+    }
+   },
+   {
+    "subject": 0,
+    "key": "default.audio.source",
+    "type": "Spa:String:JSON",
+    "value": {
+     "name": "dante_rx"
+    }
+   }
+  ]
+ },
+ {
+  "id": 62,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "error": null,
+   "props": {
+    "node.name": "alsa_output.pci-0000_02_00.1.hdmi-stereo",
+    "node.description": "AD102 High Definition Audio Controller Digital Stereo (HDMI)",
+    "node.nick": "HDMI MATRIX",
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "media.class": "Audio/Sink",
+    "api.alsa.path": "hdmi:1"
+   }
+  }
+ },
+ {
+  "id": 66,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "error": null,
+   "props": {
+    "node.name": "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo",
+    "node.description": "Arctis Nova Pro Wireless Analog Stereo",
+    "node.nick": "Arctis Nova Pro Wireless",
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "media.class": "Audio/Sink",
+    "api.alsa.path": "front:0"
+   }
+  }
+ },
+ {
+  "id": 67,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "state": "suspended",
+   "error": null,
+   "props": {
+    "node.name": "alsa_input.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.mono-fallback",
+    "node.description": "Arctis Nova Pro Wireless Mono",
+    "node.nick": "Arctis Nova Pro Wireless",
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "media.class": "Audio/Source",
+    "api.alsa.path": "hw:0"
+   }
+  }
+ }
+]

@@ -13,7 +13,7 @@
 #   say-it --open      open the reader window (it also opens by itself when reading starts)
 #   say-it --opacity N reader window opacity, 20-100 (%)
 #   say-it --test      read a test sentence
-#   say-it --status    muted / reading / installed, as JSON
+#   say-it --status    muted / reading / installed / audio output, as JSON
 #   say-it --view      the reader itself (runs inside that window)
 # Running plain say-it while it's speaking stops the speech.
 S="$(dirname "$(readlink -f "$0")")/../read_aloud.py"

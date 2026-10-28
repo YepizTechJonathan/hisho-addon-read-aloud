@@ -16,7 +16,7 @@
   read_aloud.py rename      bring the reader forward with its rename prompt (Super+Alt+N)
   read_aloud.py opacity N   set the reader window's opacity, 20-100 (%)
   read_aloud.py test        read a test sentence
-  read_aloud.py status      muted / reading / installed, as JSON
+  read_aloud.py status      muted / reading / installed / audio output, as JSON
   read_aloud.py view        reader window: which thread is being read, with
                             the sentence being spoken highlighted and an
                             opacity slider; closes itself when reading finishes
@@ -47,7 +47,8 @@ RATE = 24000
 DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
-            "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2}
+            "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
+            "fallback_output": ""}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
@@ -315,14 +316,7 @@ def queued():
 def stop(why="stop"):
     """Stop the worker and the replies waiting. They are added to the run, so Repeat
     still reads them: nothing is lost."""
-    dropped = [read_json(p) for p in queued()]
-    if dropped and os.path.exists(RUN):
-        with open(RUN, "a", encoding="utf-8") as f:
-            for item in dropped:
-                if item:
-                    f.write(json.dumps(item) + "\n")
-    for path in queued():
-        os.remove(path)
+    keep_waiting()
     try:
         os.remove(PAUSED)
     except OSError:
@@ -351,35 +345,205 @@ def next_item():
     return item
 
 
+def keep_waiting():
+    """Add the replies waiting to the run and drop them from the queue, so Repeat still
+    reads them: nothing is lost when reading stops."""
+    dropped = [read_json(p) for p in queued()]
+    if dropped and os.path.exists(RUN):
+        with open(RUN, "a", encoding="utf-8") as f:
+            for item in dropped:
+                if item:
+                    f.write(json.dumps(item) + "\n")
+    for path in queued():
+        os.remove(path)
+
+
+def sinks(dump=None):
+    """PipeWire's audio outputs from pw-dump, in its order: [{"name", "label", "state",
+    "error", "default", "usb", "hdmi"}]. [] when pw-dump is missing or doesn't answer."""
+    if dump is None:
+        try:
+            r = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=3, check=False)
+            dump = json.loads(r.stdout)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return []
+    default = ""
+    for o in dump:
+        if o.get("type", "").endswith("Metadata") and (o.get("props") or {}).get("metadata.name") == "default":
+            for entry in o.get("metadata") or []:
+                if entry.get("key") == "default.audio.sink":
+                    value = entry.get("value")
+                    default = value.get("name", "") if isinstance(value, dict) else str(value or "")
+    out = []
+    for o in dump:
+        info = o.get("info") or {}
+        props = info.get("props") or {}
+        if not o.get("type", "").endswith("Node") or props.get("media.class") != "Audio/Sink":
+            continue
+        name = props.get("node.name") or ""
+        where = " ".join(str(props.get(k) or "") for k in ("node.name", "api.alsa.path", "node.description")).lower()
+        out.append({"name": name, "label": props.get("node.nick") or props.get("node.description") or name,
+                    "state": info.get("state") or "", "error": info.get("error") or "",
+                    "default": name == default, "usb": props.get("device.bus") in ("usb", "bluetooth")
+                    or name.startswith("bluez"), "hdmi": "hdmi" in where or "iec958" in where})
+    return out
+
+
+def healthy(sink):
+    return sink["state"] not in ("error", "")
+
+
+def pick_output(outputs, fallback="", avoid=()):
+    """Where to play: (sink or None, why). The default output while it works (None: pw-cat
+    follows the default); when it is in error, missing or stalled (avoid), the fallback_output
+    setting if that works, else the first working output, a USB or Bluetooth headset before
+    HDMI. (None, why) with why "none" when nothing works; [] outputs (no pw-dump): the default."""
+    if not outputs:
+        return None, "default"
+    default = next((s for s in outputs if s["default"]), None)
+    if default and healthy(default) and default["name"] not in avoid:
+        return None, "default"
+    usable = [s for s in outputs if healthy(s) and s["name"] not in avoid and not s["default"]]
+    chosen = next((s for s in usable if fallback and s["name"] == fallback), None)
+    if not chosen and usable:
+        chosen = sorted(usable, key=lambda s: 0 if s["usb"] else 2 if s["hdmi"] else 1)[0]
+    if not chosen:
+        return None, "none"
+    if not default:
+        return chosen, "no default output"
+    if default["name"] in avoid:
+        return chosen, f"{default['label']} took no audio"
+    return chosen, f"{default['label']} is in error ({default['error'] or 'no reason given'})"
+
+
+STALL = 4.0   # s: a player that takes no audio this long is stuck (its output is dead)
+
+
+class Stalled(Exception):
+    """The player took no audio for STALL seconds."""
+
+
+class NoOutput(Exception):
+    """No audio output works: the run stops (and stays for Repeat)."""
+
+
+def reap(proc, wait=2.0):
+    """Make sure a player is gone: let it end by itself within wait seconds, else kill it."""
+    if proc is None:
+        return
+    try:
+        proc.wait(timeout=wait)
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
 class Speaker:
     """The audio player, and the sentence it was last given, so a pause can silence it at
     once and Resume can start that sentence again from its beginning."""
 
-    def __init__(self):
+    def __init__(self, fallback=""):
         self.proc, self.until, self.last = None, time.monotonic(), None
         self.skipping = False   # set by Skip: drop the rest of the reply being read
+        self.fallback = fallback   # the fallback_output setting (node.name), "" = pick one
+        self.avoid = set()         # outputs that took no audio this run
+        self.told = False          # the fallback is notified once per run
+        self.output = None         # the sink played on, None = the default output
         self.start()
+
+    def choose(self):
+        """Pick the output, log it when it isn't the default, tell once per run."""
+        outputs = sinks()
+        self.output, why = pick_output(outputs, self.fallback, self.avoid)
+        if why == "none":
+            found = ", ".join(f"{s['label']} {s['error'] or s['state']}" for s in outputs)
+            log(f"no working audio output ({found or 'none found'})")
+            notify("No working audio output")
+            raise NoOutput()
+        if self.output:
+            log(f"reading on {self.output['label']} ({self.output['name']}): {why}")
+            if not self.told:
+                self.told = True
+                default = next((s["label"] for s in outputs if s["default"]), "The default")
+                notify(f"{default} output isn't working. Reading on {self.output['label']} instead.")
+        write_json(os.path.join(STATE, "output.json"),
+                   {"output": self.output["label"] if self.output else "default", "why": why})
 
     def start(self):
         if self.proc is not None:
             self.cut()          # never two players at once
+        self.choose()
+        target = ["--target", self.output["name"]] if self.output else []
         self.proc = subprocess.Popen(["pw-cat", "--playback", "--format", "s16", "--rate", str(RATE),
-                                      "--channels", "1", "--raw", "-"],
+                                      "--channels", "1", "--raw", *target, "-"],
                                      stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            os.set_blocking(self.proc.stdin.fileno(), False)   # feed() waits with select, never in write
+        except (AttributeError, OSError, ValueError):
+            pass
         self.until = time.monotonic()   # when the audio handed over so far has been heard
 
     def cut(self):
+        """Silence now (also from the pause and skip signals): kill the player and reap it."""
         try:
             self.proc.kill()
         except Exception:
             pass
+        reap(self.proc, wait=1)
 
     def close(self):
+        """Let the player finish what it was given, then make sure it is gone: a player on a
+        dead output never finishes, and waiting for it left the worker hanging forever."""
         try:
             self.proc.stdin.close()
-            self.proc.wait()
         except Exception:
             pass
+        reap(self.proc, wait=max(0, self.until - time.monotonic()) + STALL)
+
+    def feed(self, data):
+        """Hand data to the player in chunks as its pipe takes them. Raises Stalled when it
+        takes nothing for STALL seconds while not paused or skipping, BrokenPipeError when it
+        is cut off (pause, skip) or dies."""
+        fd = self.proc.stdin.fileno()
+        view, last = memoryview(data), time.monotonic()
+        while view:
+            if self.skipping or os.path.exists(PAUSED):
+                raise BrokenPipeError("cut off")
+            if not select.select([], [fd], [], 0.1)[1]:
+                if time.monotonic() - last > STALL:
+                    raise Stalled()
+                continue
+            try:
+                n = os.write(fd, view[:65536])
+            except BlockingIOError:
+                continue
+            view, last = view[n:], time.monotonic()
+
+    def unheard(self):
+        """Bytes handed over that the player hasn't taken from its pipe yet."""
+        import array, termios
+        try:
+            n = array.array("i", [0])
+            fcntl.ioctl(self.proc.stdin.fileno(), termios.FIONREAD, n)
+            return n[0]
+        except Exception:
+            return 0
+
+    def stalled(self, status, pcm):
+        """The player took no audio: drop it and its output, say the sentence again on
+        another output (NoOutput when there is none)."""
+        name = self.output["name"] if self.output else next((s["name"] for s in sinks() if s["default"]), "default")
+        log(f"player stalled on {name}: no audio taken for {STALL:.0f} s")
+        self.avoid.add(name)
+        self.cut()
+        self.proc = None
+        self.start()
+        self.write(status, pcm)
 
     def skip(self):
         """From the SIGUSR2 handler: silence now; read() drops the rest of the reply."""
@@ -408,7 +572,14 @@ class Speaker:
         if self.skipping:
             return False
         self.hold()
-        return time.monotonic() < self.until
+        if time.monotonic() < self.until:
+            return True
+        # all heard by now, unless the player stopped taking audio after its pipe took the
+        # last of it (a short last sentence fits in the pipe): say it again elsewhere
+        if self.last and self.unheard() and time.monotonic() > self.until + STALL:
+            self.stalled(*self.last)
+            return True
+        return bool(self.last and self.unheard())
 
     def play(self, status, pcm):
         """Hand a sentence over just before the one playing ends, and only then move the
@@ -428,8 +599,9 @@ class Speaker:
         start = max(self.until, time.monotonic())
         self.last, self.until = (status, pcm), start + len(pcm) / RATE
         try:
-            self.proc.stdin.write(pcm.tobytes())
-            self.proc.stdin.flush()
+            self.feed(pcm.tobytes())
+        except Stalled:
+            self.stalled(status, pcm)
         except (OSError, ValueError):
             if self.skipping:            # cut off by Skip: read() moves on
                 return
@@ -487,6 +659,7 @@ def worker():
     except OSError:
         return  # another worker is reading; it will get to our item
     open(PIDFILE, "w").write(str(os.getpid()))
+    speaker = None
 
     def on_term(*_):
         log("stopped")
@@ -494,6 +667,8 @@ def worker():
             os.remove(NOW)
         except OSError:
             pass
+        if speaker is not None:   # never leave the player behind
+            speaker.cut()
         os._exit(0)
     signal.signal(signal.SIGTERM, on_term)
 
@@ -508,7 +683,25 @@ def worker():
         os.remove(PAUSED)  # a new run never starts paused
     except OSError:
         pass
-    speaker = Speaker()
+
+    def no_output():
+        """Nothing can play: stop the run, keeping it (and what waits) for Repeat."""
+        keep_waiting()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        for path in (NOW, PIDFILE):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        log("reading stopped: no working audio output (Repeat reads the run again)")
+        if speaker is not None:
+            speaker.cut()
+
+    open(RUN, "w").close()  # a new run starts (what waits joins it if nothing can play)
+    try:
+        speaker = Speaker(conf.get("fallback_output") or "")
+    except NoOutput:
+        return no_output()
     signal.signal(signal.SIGUSR1, lambda *_: speaker.cut())   # pause: silence at once
     signal.signal(signal.SIGUSR2, lambda *_: speaker.skip())  # skip: drop the rest of this reply
 
@@ -530,28 +723,30 @@ def worker():
                         pass
         threading.Thread(target=make, daemon=True).start()
 
-        for i in range(len(segs)):
-            status = {"source": item.get("source", ""), "asked": item.get("asked", ""),
-                      "thread": item.get("thread", ""), "url": item.get("url", ""), "segments": segs,
-                      "current": i, "number": number}
-            pcm = None
-            while pcm is None and not speaker.skipping:
-                try:
-                    pcm = ready.get(timeout=0.2)
-                except queue.Empty:
-                    pass
-            if speaker.skipping:
-                break
-            speaker.play(status, pcm)
-        done.set()
+        try:
+            for i in range(len(segs)):
+                status = {"source": item.get("source", ""), "asked": item.get("asked", ""),
+                          "thread": item.get("thread", ""), "url": item.get("url", ""), "segments": segs,
+                          "current": i, "number": number}
+                pcm = None
+                while pcm is None and not speaker.skipping:
+                    try:
+                        pcm = ready.get(timeout=0.2)
+                    except queue.Empty:
+                        pass
+                if speaker.skipping:
+                    break
+                speaker.play(status, pcm)
+        finally:
+            done.set()
         if speaker.skipping:      # Skip: on to the next reply, on a fresh player
             speaker.skipping = False
             speaker.start()
 
-    open(RUN, "w").close()  # a new run starts
     if conf["auto_open"]:
-        subprocess.Popen(["python3", os.path.abspath(__file__), "open"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        reader = subprocess.Popen(["python3", os.path.abspath(__file__), "open"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        threading.Thread(target=reader.wait, daemon=True).start()   # reaped: no <defunct> left
     number = 0
     log(f"reading starts (worker {os.getpid()})")
     while True:
@@ -560,7 +755,11 @@ def worker():
             # Keep the lock until the audio already handed to the player has
             # been heard: a reply arriving now joins this run and waits its
             # turn, instead of a second reader talking over the last sentence.
-            if speaker.busy():
+            try:
+                still = speaker.busy()
+            except NoOutput:
+                return no_output()
+            if still:
                 time.sleep(0.05)
                 continue
             try:
@@ -586,7 +785,10 @@ def worker():
         if item.get("source") and item.get("notify", True):
             notify(item["source"], "Reading aloud")
         log(f"reply {number}: {item.get('source') or 'selected text'} ({len(item['segments'])} sentences)")
-        read(item, number)
+        try:
+            read(item, number)
+        except NoOutput:
+            return no_output()
     log("reading finished")
     speaker.close()
 
@@ -1098,6 +1300,23 @@ def view():
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
+def status(outputs=None):
+    """muted / reading / installed, the output in use (or that would be used) and any
+    output in error, for the dashboard's Status button."""
+    outputs = sinks() if outputs is None else outputs
+    reading = bool(read_json(NOW))
+    playing = (read_json(os.path.join(STATE, "output.json")) or {}) if reading and worker_pid() else {}
+    if not playing:
+        sink, why = pick_output(outputs, settings().get("fallback_output") or "")
+        default = next((s["label"] for s in outputs if s["default"]), "default")
+        playing = {"output": sink["label"] if sink else (default if why != "none" else "none"), "why": why}
+    return {"muted": os.path.exists(MUTE), "reading": reading, "waiting": len(queued()), "opacity": opacity(),
+            "output": playing.get("output"), "output_why": playing.get("why"),
+            "outputs_in_error": [f"{s['label']}: {s['error'] or 'error'}" for s in outputs if s["state"] == "error"],
+            "venv": os.path.exists(PY), "models": all(os.path.exists(f"{MODELS}/{f}")
+                                                     for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"))}
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "say"
     if cmd == "hook":
@@ -1140,10 +1359,7 @@ def main():
         enqueue({"source": "Read aloud test", "notify": False,
                  "segments": segments("This is the read aloud voice. If you can hear this, it works.")})
     elif cmd == "status":
-        print(json.dumps({"muted": os.path.exists(MUTE), "reading": bool(read_json(NOW)),
-                          "waiting": len(queued()), "opacity": opacity(),
-                          "venv": os.path.exists(PY), "models": all(os.path.exists(f"{MODELS}/{f}")
-                          for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"))}))
+        print(json.dumps(status()))
     elif cmd == "stop":
         stop()
     elif cmd == "repeat":

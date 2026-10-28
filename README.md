@@ -10,6 +10,13 @@ it), what was asked, the sentence being spoken highlighted, and an opacity slide
 Hyprland (Omarchy) binds, refused if already in use; without Hyprland replies are still read
 aloud, with no keys or reader window.
 
+When the default audio output is broken (PipeWire shows it in error, as Dante is without its
+clock) the voice reads on another output instead and says so once: the `fallback_output` setting
+if that one works, else a USB or Bluetooth headset before HDMI. A player that takes no audio for
+4 seconds is dropped and the sentence is said again on another output; with no working output
+at all you get "No working audio output" and reading stops, the run kept for Repeat. It never
+hangs silently. The dashboard's **Status** shows the output in use and any output in error.
+
 ## What it needs
 
 - You need:
@@ -25,6 +32,7 @@ aloud, with no keys or reader window.
   - `announce_thread` (bool, default `True`)
   - `auto_pause` (bool, default `True`)
   - `title_size` (int, default `2`)
+  - `fallback_output` (str, default ``)
   - `key_read` (str, default `SUPER + ALT + T`)
   - `key_repeat` (str, default `SUPER + ALT + R`)
   - `key_stop` (str, default `SUPER + ALT + X`)
@@ -57,8 +65,10 @@ Once installed, every Claude Code reply is read aloud. Keys (Hyprland): Super+Al
 ## Settings
 
 On its page or in `~/Hisho/System/Config/Addons/read-aloud.yaml`: the Kokoro voice, speed, the
-reader's opacity, whether the reader opens by itself, whether the thread is announced, and the keys
-(`none` leaves a key out). Defaults: Super+Alt+T read the highlighted text, R repeat, X stop, M
+reader's opacity, whether the reader opens by itself, whether the thread is announced, the output to read on
+when the default one is broken (`fallback_output`, a PipeWire node name such as
+`alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo` from `wpctl status` /
+`pw-dump`; empty picks one), and the keys (`none` leaves a key out). Defaults: Super+Alt+T read the highlighted text, R repeat, X stop, M
 mute, V reader window, O open the thread, P pause / resume.
 
 ## How to remove

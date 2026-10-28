@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+- A dead audio output no longer hangs reading silently. Before playing, the outputs are read from PipeWire (pw-dump): when the default one is in error (Dante without its clock, say) the voice reads on another and says so once, e.g. "Dante output isn't working. Reading on Arctis Nova Pro Wireless instead." New setting `fallback_output` (a PipeWire node name) picks that output; empty picks a USB or Bluetooth headset before HDMI.
+- Stall watchdog: audio is handed to the player in chunks, and a player that takes none for 4 seconds (not paused or skipping) is killed and the sentence said again on another output. With none working: "No working audio output", reading stops and the run (with what was waiting) stays for Repeat.
+- No more leftover processes: stopping, finishing or skipping always reaps the player (a player on a dead output never ended, and the reader waited for it forever); Stop kills it too; the reader window's launcher no longer stays as <defunct>.
+- Status (dashboard button, `say-it --status`) shows the output in use and why, and any output in error.
 ## 0.8.3
 
 - Install works before Claude Code is installed (a new machine's first boot): ~/.claude is created for the Stop hook.

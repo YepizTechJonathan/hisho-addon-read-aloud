@@ -45,7 +45,7 @@ addon = os.environ["ADDON"]
 home = os.path.expanduser("~")
 
 # Settings for read_aloud.py
-keys = ["voice", "speed", "opacity", "auto_open", "announce_thread", "auto_pause", "title_size",
+keys = ["voice", "speed", "opacity", "auto_open", "announce_thread", "auto_pause", "title_size", "fallback_output",
         "key_read", "key_repeat", "key_stop", "key_mute", "key_reader", "key_open", "key_pause", "key_rename", "key_skip"]
 conf = {}
 for k in keys:
