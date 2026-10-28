@@ -619,6 +619,7 @@ def test_a_broken_default_output_falls_back_to_a_headset_before_hdmi():
     assert ra.pick_output(healthy, avoid={DANTE})[0]["name"] == ARCTIS     # ... unless it took no audio
     assert ra.pick_output([s for s in outputs if not s["default"]])[1] == "no default output"
     assert ra.pick_output([]) == (None, "default")                         # no pw-dump: try the default
+    assert ra.pick_output([], avoid={"default"}) == (None, "none")         # ... once, not after a stall
 
 
 def test_with_no_working_output_there_is_nothing_to_play_on():
@@ -752,3 +753,19 @@ def test_close_never_waits_forever_on_a_stuck_player(tmp_path, monkeypatch):
     speaker = ra.Speaker()
     _in_thread(speaker.close)                       # stdin closed, `sleep` ignores it: killed
     assert made[0][1].poll() is not None
+
+
+def test_a_stall_while_pipewire_does_not_answer_stops_instead_of_looping(tmp_path, monkeypatch):
+    """Seen for real: Dante's driver blocked PipeWire, the headset player stalled too, pw-dump stopped
+    answering, and the default was tried again and again, a new stalled player every 10 s."""
+    answers = [SINKS(SAMPLE)]                        # the first look works, then PipeWire is stuck
+    told = _speaker_env(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(ra, "sinks", lambda dump=None: answers.pop() if answers else [])
+    made = _real_players(monkeypatch, deaf=lambda cmd: True)
+    speaker = ra.Speaker()
+    with pytest.raises(ra.NoOutput):
+        _in_thread(lambda: speaker.write({"segments": [{"s": "Hello.", "nl": True}], "current": 0},
+                                         _Pcm(b"\0" * 400_000)))
+    assert len(made) == 1 and made[0][1].poll() is not None   # one player, killed: no retry loop
+    assert told[-1] == "No working audio output"
+    assert "PipeWire lists no outputs or does not answer" in (tmp_path / "read-aloud.log").read_text()

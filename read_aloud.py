@@ -397,9 +397,11 @@ def pick_output(outputs, fallback="", avoid=()):
     """Where to play: (sink or None, why). The default output while it works (None: pw-cat
     follows the default); when it is in error, missing or stalled (avoid), the fallback_output
     setting if that works, else the first working output, a USB or Bluetooth headset before
-    HDMI. (None, why) with why "none" when nothing works; [] outputs (no pw-dump): the default."""
+    HDMI. (None, why) with why "none" when nothing works. With no outputs to see (pw-dump missing
+    or PipeWire not answering) the default is tried, but only until a player has stalled: then
+    there is nothing known to work, and trying the default again would loop forever."""
     if not outputs:
-        return None, "default"
+        return (None, "none") if avoid else (None, "default")
     default = next((s for s in outputs if s["default"]), None)
     if default and healthy(default) and default["name"] not in avoid:
         return None, "default"
@@ -462,7 +464,7 @@ class Speaker:
         self.output, why = pick_output(outputs, self.fallback, self.avoid)
         if why == "none":
             found = ", ".join(f"{s['label']} {s['error'] or s['state']}" for s in outputs)
-            log(f"no working audio output ({found or 'none found'})")
+            log(f"no working audio output ({found or 'PipeWire lists no outputs or does not answer'})")
             notify("No working audio output")
             raise NoOutput()
         if self.output:

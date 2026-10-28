@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2
+
+- A stalled player while PipeWire itself doesn't answer (Dante's driver blocking it, found testing 0.9.1 on Souko) now ends with "No working audio output" instead of trying the default output again every 10 seconds forever.
+
 ## 0.9.1
 
 - `fallback_output` is optional: left empty (the default) it no longer stops install and update with "fallback_output is required".
