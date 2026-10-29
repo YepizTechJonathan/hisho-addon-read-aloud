@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3
+
+- Every field on its setup form says in plain words what it is, and links to where to get it (addon.yaml `help:`, shown by Hisho's dashboard).
+
 ## 0.9.2
 
 - A stalled player while PipeWire itself doesn't answer (Dante's driver blocking it, found testing 0.9.1 on Souko) now ends with "No working audio output" instead of trying the default output again every 10 seconds forever.
