@@ -46,13 +46,13 @@ home = os.path.expanduser("~")
 
 # Settings for read_aloud.py
 keys = ["voice", "speed", "opacity", "auto_open", "announce_thread", "auto_pause", "title_size", "fallback_output",
-        "cpu_threads", "low_priority", "key_read", "key_repeat", "key_stop", "key_mute", "key_reader", "key_open", "key_pause", "key_rename", "key_skip"]
+        "cpu_threads", "use_gpu", "low_priority", "key_read", "key_repeat", "key_stop", "key_mute", "key_reader", "key_open", "key_pause", "key_rename", "key_skip"]
 conf = {}
 for k in keys:
     v = os.environ.get(f"HISHO_OPT_{k.upper()}")
     if v is None:
         continue
-    conf[k] = (v.lower() in ("1", "true", "yes", "on")) if k in ("auto_open", "announce_thread", "auto_pause", "low_priority") else (int(v) if k in ("speed", "opacity", "title_size", "cpu_threads") else v)
+    conf[k] = (v.lower() in ("1", "true", "yes", "on")) if k in ("auto_open", "announce_thread", "auto_pause", "low_priority") else (int(v) if k in ("speed", "opacity", "title_size") else v)
 path = f"{home}/.config/hisho/read-aloud.json"
 try:
     before = json.load(open(path))
@@ -90,6 +90,10 @@ open(tmp, "a").write("\n")
 os.replace(tmp, path)
 print("Stop hook:", command)
 EOF
+
+echo "== Voice speed on this computer (silent)"
+# Picks the cores the voice uses (cpu_threads auto); redone on every install and update. Never fails the install.
+"$DATA/venv/bin/python" "$ADDON/read_aloud.py" calibrate || echo "voice timing failed; it is retried before the first reading"
 
 echo "== Hyprland keys"
 if ! command -v hyprctl >/dev/null || [ ! -f "$HOME/.config/hypr/bindings.lua" ]; then

@@ -17,6 +17,17 @@ if that one works, else a USB or Bluetooth headset before HDMI. A player that ta
 at all you get "No working audio output" and reading stops, the run kept for Repeat. It never
 hangs silently. The dashboard's **Status** shows the output in use and any output in error.
 
+The voice fits each computer and leaves it free while it reads. On install and update it is
+timed silently (`read_aloud.py calibrate`, also redone when the processor or onnxruntime changes)
+and uses the fewest processor cores that make speech at least 3 times faster than it plays,
+never more than half the real cores; a run with many gaps moves it up one step. It runs at low
+priority (nice 10, idle disk), with no busy-waiting. A computer too slow even then is told so
+plainly at install and in **Status**. A graphics card is used when onnxruntime offers one
+(CUDA, ROCm, DirectML or Core ML): install `onnxruntime-gpu` in
+`~/.local/share/hisho/read-aloud/venv` yourself (a large download, so it isn't done for you);
+`use_gpu: no` keeps it on the processor. Gaps where the next sentence wasn't ready are logged
+in `~/.local/state/hisho/read-aloud/read-aloud.log` ("voice behind").
+
 ## What it needs
 
 - You need:
@@ -33,7 +44,8 @@ hangs silently. The dashboard's **Status** shows the output in use and any outpu
   - `auto_pause` (bool, default `True`)
   - `title_size` (int, default `2`)
   - `fallback_output` (str, optional)
-  - `cpu_threads` (int, default `4`)
+  - `cpu_threads` (str, default `auto`)
+  - `use_gpu` (str, default `auto`)
   - `low_priority` (bool, default `True`)
   - `key_read` (str, default `SUPER + ALT + T`)
   - `key_repeat` (str, default `SUPER + ALT + R`)
@@ -70,7 +82,8 @@ On its page or in `~/Hisho/System/Config/Addons/read-aloud.yaml`: the Kokoro voi
 reader's opacity, whether the reader opens by itself, whether the thread is announced, the output to read on
 when the default one is broken (`fallback_output`, a PipeWire node name such as
 `alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo` from `wpctl status` /
-`pw-dump`; empty picks one), and the keys (`none` leaves a key out). Defaults: Super+Alt+T read the highlighted text, R repeat, X stop, M
+`pw-dump`; empty picks one), the voice's cores (`cpu_threads`: `auto` measures, a number overrides),
+`use_gpu` and `low_priority`, and the keys (`none` leaves a key out). Defaults: Super+Alt+T read the highlighted text, R repeat, X stop, M
 mute, V reader window, O open the thread, P pause / resume.
 
 ## How to remove

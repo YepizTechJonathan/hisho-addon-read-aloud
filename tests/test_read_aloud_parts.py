@@ -34,6 +34,8 @@ SAMPLE = json.loads((HERE / "tests" / "pw-dump-sample.json").read_text())   # So
 class _Session:
     """Stands in for onnxruntime: records how the voice's session is set up."""
     made = []
+    available = ["AzureExecutionProvider", "CPUExecutionProvider"]
+    __version__ = "1.31.0"
 
     class SessionOptions:
         def __init__(self):
@@ -46,14 +48,41 @@ class _Session:
         _Session.made.append((path, sess_options, providers))
         return types.SimpleNamespace(opts=sess_options)
 
+    def get_available_providers():
+        return list(_Session.available)
+
 
 def _fake_voice(monkeypatch, voice):
-    """kokoro_onnx (and onnxruntime) with Kokoro.from_session giving `voice`; priority left alone."""
-    _Session.made = []
+    """kokoro_onnx (and onnxruntime) with Kokoro.from_session giving `voice`; priority left alone,
+    the voice already measured at 4 threads."""
+    _Session.made, _Session.available = [], ["AzureExecutionProvider", "CPUExecutionProvider"]
     monkeypatch.setitem(sys.modules, "onnxruntime", _Session)
     monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(
         Kokoro=types.SimpleNamespace(from_session=lambda session, voices: voice)))
     monkeypatch.setattr(ra, "lower_priority", lambda: None)
+    monkeypatch.setattr(ra, "calibration", lambda conf, measure=None: {
+        "threads": 4, "speed": 8.0, "providers": ["CPUExecutionProvider"]})
+
+
+REAL_STATE, REAL_CONFIG = ra.STATE, ra.CONFIG
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_reader(tmp_path_factory, monkeypatch):
+    """Every state file in a scratch folder. Hisho's hourly code sync runs these tests on Souko while
+    it reads: a test that found the real worker.pid paused (SIGUSR1) or stopped the real reading."""
+    scratch = tmp_path_factory.mktemp("state")
+    for name, value in list(vars(ra).items()):
+        if isinstance(value, str) and (value == REAL_CONFIG or value == REAL_STATE or value.startswith(REAL_STATE + os.sep)):
+            monkeypatch.setattr(ra, name, str(scratch / os.path.relpath(value, os.path.dirname(REAL_STATE))))
+    monkeypatch.setattr(ra, "CONFIG", str(scratch / "config.json"))
+    os.makedirs(ra.QUEUE, exist_ok=True)
+
+
+def test_no_test_can_touch_the_real_reading():
+    for name, value in vars(ra).items():
+        if isinstance(value, str) and os.path.isabs(value):
+            assert not value.startswith(REAL_STATE) and value != REAL_CONFIG, name
 
 
 @pytest.fixture(autouse=True)
@@ -498,7 +527,7 @@ def test_every_pause_and_resume_says_what_asked_for_it(tmp_path, monkeypatch):
     monkeypatch.setattr(ra.os, "kill", lambda *a: None)
     ra.pause("dashboard")
     ra.pause("click on the reader band")
-    assert logged == ["paused by: dashboard", "resumed by: click on the reader band"]
+    assert [l.split(" [pid ")[0] for l in logged] == ["paused by: dashboard", "resumed by: click on the reader band"]
 
 
 def test_a_thread_opens_in_one_window_brought_forward_or_replaced(tmp_path, monkeypatch):
@@ -796,13 +825,21 @@ def test_a_stall_while_pipewire_does_not_answer_stops_instead_of_looping(tmp_pat
     assert "PipeWire lists no outputs or does not answer" in (tmp_path / "read-aloud.log").read_text()
 
 
-def test_the_voice_uses_a_few_cores_without_busy_waiting_at_lowest_priority(monkeypatch):
+def test_the_voice_uses_its_measured_cores_without_busy_waiting_at_low_priority(monkeypatch):
     """Seen on Souko: onnxruntime's defaults kept about 25 of 32 cores busy and froze the PC."""
     _fake_voice(monkeypatch, "voice")
     monkeypatch.delenv("ONNX_PROVIDER", raising=False)
     niced, ran = [], []
     monkeypatch.setattr(ra.os, "nice", lambda n: niced.append(n) or 0)
     monkeypatch.setattr(ra.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    real_open, grouped = open, []
+
+    def fake_open(path, *a, **k):
+        if path == "/proc/self/autogroup":
+            grouped.append(path)
+            return real_open(os.devnull, *a, **k)
+        return real_open(path, *a, **k)
+    monkeypatch.setattr("builtins.open", fake_open)
     monkeypatch.setattr(ra, "lower_priority", LOWER_PRIORITY)
     monkeypatch.setattr(ra, "log", lambda event: None)
     assert ra.voice_engine({**ra.DEFAULTS}) == "voice"
@@ -810,19 +847,113 @@ def test_the_voice_uses_a_few_cores_without_busy_waiting_at_lowest_priority(monk
     assert path.endswith("kokoro-v1.0.onnx") and providers == ["CPUExecutionProvider"]
     assert opts.intra_op_num_threads == 4 and opts.inter_op_num_threads == 1
     assert opts.config == {"session.intra_op.allow_spinning": "0", "session.inter_op.allow_spinning": "0"}
-    assert 19 in niced and ran[0][:2] == ["ionice", "-c3"]
+    assert ra.NICE in niced and 19 not in niced   # nice 10: a busy PC can't starve the voice
+    assert ran[0][:2] == ["ionice", "-c3"] and grouped == ["/proc/self/autogroup"]
 
 
-def test_cpu_threads_is_kept_between_one_and_the_cores_there_are(monkeypatch):
+def test_never_more_than_half_the_physical_cores():
+    assert [ra.thread_steps(p) for p in (1, 2, 4, 6, 8, 16)] == [
+        [1], [1], [1, 2], [1, 2, 3], [1, 2, 4], [1, 2, 4, 8]]
+
+
+def test_cores_counts_hyperthreads_once_and_only_cpus_the_worker_may_use(monkeypatch):
+    monkeypatch.setattr(ra.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3})   # taskset / container
+    siblings = {0: "0,2", 1: "1,3", 2: "0,2", 3: "1,3"}
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda path, *a, **k: __import__("io").StringIO(
+        siblings[int(path.split("cpu")[2].split("/")[0])]) if "thread_siblings_list" in str(path) else real_open(path, *a, **k))
+    assert ra.cores() == (4, 2)
+
+
+def _machine(physical, cpu="Test CPU"):
+    return {"cpu": cpu, "physical": physical, "logical": physical * 2, "onnxruntime": "1.31.0",
+            "providers": ["CPUExecutionProvider"]}
+
+
+def _calibrate_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(ra, "STATE", str(tmp_path))
+    monkeypatch.setattr(ra, "CALIBRATION", str(tmp_path / "calibration.json"))
+    logged = []
+    monkeypatch.setattr(ra, "log", logged.append)
+    return logged
+
+
+@pytest.mark.parametrize("physical,speeds,threads,tried", [
+    (16, {1: 2.0, 2: 3.4, 4: 6.0, 8: 9.0}, 2, [1, 2]),        # the fewest fast enough; stops there
+    (16, {1: 3.1}, 1, [1]),
+    (8, {1: 1.0, 2: 1.9, 4: 2.6}, 4, [1, 2, 4]),              # none fast enough: the fastest
+    (4, {1: 1.2, 2: 2.2}, 2, [1, 2]),
+    (2, {1: 2.5}, 1, [1]),                                     # 2 cores: never more than 1
+])
+def test_calibration_picks_the_fewest_threads_fast_enough(tmp_path, monkeypatch, physical, speeds, threads, tried):
+    _calibrate_env(tmp_path, monkeypatch)
+    asked = []
+    cal = ra.calibrate(CONF, measure=lambda t, p, c: asked.append(t) or speeds[t], here=_machine(physical))
+    assert cal["threads"] == threads and asked == tried and not cal["too_slow"]
+    assert json.loads((tmp_path / "calibration.json").read_text())["threads"] == threads
+
+
+def test_a_computer_too_slow_for_the_voice_is_said_plainly(tmp_path, monkeypatch):
+    logged = _calibrate_env(tmp_path, monkeypatch)
+    cal = ra.calibrate(CONF, measure=lambda t, p, c: {1: 0.6, 2: 1.1}[t], here=_machine(4))
+    assert cal["threads"] == 2 and cal["too_slow"]
+    assert "too slow to read without gaps" in logged[-1]
+    assert ra.voice_status().startswith("This computer is too slow for the local voice to read without gaps")
+
+
+def test_the_calibration_is_redone_only_when_the_machine_changed(tmp_path, monkeypatch):
+    _calibrate_env(tmp_path, monkeypatch)
+    here = [_machine(16)]
+    monkeypatch.setattr(ra, "machine", lambda conf: here[0])
+    runs = []
+    measure = lambda t, p, c: runs.append(t) or 5.0
+    assert ra.calibration(CONF, measure)["threads"] == 1 and ra.calibration(CONF, measure)["threads"] == 1
+    assert runs == [1]                                   # saved: not timed again
+    here[0] = _machine(8, cpu="Another CPU")             # moved to another computer
+    ra.calibration(CONF, measure)
+    assert runs == [1, 1]
+
+
+def test_many_gaps_in_a_run_give_the_next_run_one_more_step(tmp_path, monkeypatch):
+    logged = _calibrate_env(tmp_path, monkeypatch)
+    ra.write_json(ra.CALIBRATION, {**_machine(8), "threads": 1, "speed": 3.2})
+    assert [ra.step_up(CONF), ra.step_up(CONF), ra.step_up(CONF)] == [2, 4, None]   # cap: half of 8
+    assert json.loads((tmp_path / "calibration.json").read_text())["threads"] == 4
+    assert "4 threads from the next run" in logged[-1]
+    ra.write_json(ra.CALIBRATION, {**_machine(8), "threads": 1, "speed": 3.2})
+    assert ra.step_up({**CONF, "cpu_threads": "3"}) is None   # a number set by hand is left alone
+
+
+def test_a_number_in_cpu_threads_overrides_the_measurement(monkeypatch):
     _fake_voice(monkeypatch, "voice")
     monkeypatch.setattr(ra, "log", lambda event: None)
-    monkeypatch.setattr(ra.os, "cpu_count", lambda: 8)
-    monkeypatch.setenv("ONNX_PROVIDER", "CUDAExecutionProvider")
-    for asked, used in ((0, 4), (-3, 1), (2, 2), (64, 8)):
+    monkeypatch.setattr(ra, "cores", lambda: (8, 4))
+    monkeypatch.setattr(ra, "calibration", lambda *a, **k: pytest.fail("not measured when set"))
+    for asked, used in (("2", 2), ("64", 8), (3, 3)):
         _Session.made = []
         ra.voice_engine({**ra.DEFAULTS, "cpu_threads": asked, "low_priority": False})
         assert _Session.made[0][1].intra_op_num_threads == used
-        assert _Session.made[0][2] == ["CUDAExecutionProvider"]
+    assert ra.auto_threads({"cpu_threads": "auto"}) and ra.auto_threads({"cpu_threads": "0"})
+
+
+def test_a_gpu_is_used_when_onnxruntime_offers_one_with_the_cpu_after(monkeypatch):
+    monkeypatch.delenv("ONNX_PROVIDER", raising=False)
+    cpu_only = ["AzureExecutionProvider", "CPUExecutionProvider"]
+    cuda = ["CUDAExecutionProvider", *cpu_only]
+    assert ra.providers(CONF, cpu_only) == ["CPUExecutionProvider"]
+    assert ra.providers(CONF, cuda) == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert ra.providers({**CONF, "use_gpu": "no"}, cuda) == ["CPUExecutionProvider"]
+    monkeypatch.setenv("ONNX_PROVIDER", "ROCMExecutionProvider")
+    assert ra.providers(CONF, cuda) == ["ROCMExecutionProvider"]
+
+
+def test_low_memory_is_logged(monkeypatch):
+    _fake_voice(monkeypatch, "voice")
+    logged = []
+    monkeypatch.setattr(ra, "log", logged.append)
+    monkeypatch.setattr(ra, "free_memory_mb", lambda: 900)
+    ra.voice_engine({**ra.DEFAULTS, "low_priority": False})
+    assert any(l.startswith("low memory: 900 MB") for l in logged)
 
 
 def test_low_priority_off_leaves_priority_alone(monkeypatch):
@@ -866,3 +997,23 @@ def test_a_gap_while_the_voice_makes_the_next_sentence_is_logged(tmp_path, monke
     log = (state / "read-aloud.log").read_text()
     assert "voice behind: 0." in log and "s of silence before sentence 2 of 2 (23 characters)" in log
     assert "sentence 1 of 2" not in log
+
+
+def test_every_pause_says_who_asked_and_an_unknown_one_is_logged(tmp_path, monkeypatch):
+    logged = []
+    monkeypatch.setattr(ra, "log", logged.append)
+    monkeypatch.setattr(ra, "worker_pid", lambda: 999999999)   # no such process: the signal goes nowhere
+    monkeypatch.setattr(ra, "caller", lambda: "command line (from bash < claude)")
+    assert ra.pause("dashboard") == "paused"
+    assert open(ra.PAUSED).read().startswith("dashboard [pid ")
+    assert logged[-1].startswith("paused by: dashboard [pid ") and logged[-1].endswith("(from bash < claude)]")
+    ra.pause("Super+Alt+P key")
+    assert logged[-1].startswith("resumed by: Super+Alt+P key [pid ")
+
+    open(ra.PAUSED, "w").close()                    # made by something else, saying nothing
+    speaker = ra.Speaker.__new__(ra.Speaker)
+    speaker.skipping, speaker.last, speaker.until, speaker.proc = False, None, 0, None
+    monkeypatch.setattr(speaker, "cut", lambda: os.remove(ra.PAUSED), raising=False)   # resumes at once
+    monkeypatch.setattr(speaker, "start", lambda: None, raising=False)
+    speaker.hold()
+    assert "paused by: unknown" in logged[-1]

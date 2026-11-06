@@ -2,7 +2,13 @@
 
 ## 0.10.0
 
-- The voice no longer makes the PC unusable while it reads. onnxruntime used every core and kept them busy-waiting (about 25 of 32 busy on Souko, 74 CPU-seconds for 14 s of speech). It now uses 4 cores with no busy-waiting, at the lowest CPU and disk priority: 5.4 CPU-seconds for the same speech, and faster (1.8 s instead of 2.5 s). New settings `cpu_threads` (default 4) and `low_priority` (default on).
+- Reading no longer pauses by itself. Hisho's hourly code sync runs these tests on Souko, and a test that opens the thread found the real worker.pid and paused the real reading (SIGUSR1, with its log line swallowed), the "random" pauses seen on Souko (Nov 5 20:25:57 and 22:04:51). Every test now runs in a scratch state folder, checked by a test. Every pause and resume logs what asked for it with the pid and the processes it came from, and a paused marker made by anything else is logged as "paused by: unknown".
+- The voice no longer makes the PC unusable while it reads. onnxruntime used every core and kept them busy-waiting (about 25 of 32 busy on Souko, 74 CPU-seconds for 14 s of speech, and the PC unusable). Now there is no busy-waiting on any computer, and the cores fit each one: on install and update the voice is timed silently (`read_aloud.py calibrate`, also redone when the processor, core count or onnxruntime changes) at 1, 2, 4 ... threads, up to half the real cores (hyperthreads not counted, only the CPUs the worker may use), and the fewest that make speech 3 times faster than it plays are kept in `~/.local/state/hisho/read-aloud/calibration.json`. New setting `cpu_threads`: `auto` (default) or a number that overrides it.
+- A computer too slow for the voice (under 1.5 times faster than speech even at its best) is told so at install and in Status: "This computer is too slow for the local voice to read without gaps". Install doesn't fail.
+- More than 3 "voice behind" gaps in a run move the next run up one step of threads (up to the cap), noted in calibration.json and the log.
+- Low priority (`low_priority`, default on) is nice 10 and idle disk priority, set on the worker's autogroup too (with autogroup scheduling, on by default on Ubuntu and Omarchy, nice alone only ranks it against itself). Not nice 19: on a fully busy PC that starves the voice into gaps, and a process can't raise its priority back.
+- A graphics card is used when onnxruntime offers one (CUDA, ROCm, DirectML, Core ML), the CPU after it; `use_gpu: no` keeps it on the CPU. onnxruntime-gpu isn't installed for you (a large download).
+- Under 2 GB of free memory when reading starts is logged as a warning.
 - Up to 4 sentences are made ahead of the one playing (was 2), and more than 0.3 s of silence because the next sentence wasn't made yet is logged ("voice behind: 0.8 s of silence before sentence 3 of 12 (240 characters)"), so a silence that isn't a pause can be explained afterwards.
 
 ## 0.9.3

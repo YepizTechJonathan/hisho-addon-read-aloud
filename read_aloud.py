@@ -17,6 +17,7 @@
   read_aloud.py opacity N   set the reader window's opacity, 20-100 (%)
   read_aloud.py test        read a test sentence
   read_aloud.py status      muted / reading / installed / audio output, as JSON
+  read_aloud.py calibrate   time the voice on this computer (silently) and pick its cores
   read_aloud.py view        reader window: which thread is being read, with
                             the sentence being spoken highlighted and an
                             opacity slider; closes itself when reading finishes
@@ -48,10 +49,11 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
-            "fallback_output": "", "cpu_threads": 4, "low_priority": True}
+            "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
+CALIBRATION = os.path.join(STATE, "calibration.json")   # how many cores the voice needs here, measured
 RENAME = os.path.join(STATE, "rename")   # asks the reader to show its rename prompt   # the one window a thread opens in
 NAMES = os.path.join(STATE, "thread-names.json")   # names typed in the reader or on the dashboard   # the thread the last reply came from
 # Background colours for the thread band (256-colour terminal), one per thread
@@ -419,6 +421,7 @@ def pick_output(outputs, fallback="", avoid=()):
 
 
 AHEAD = 4     # sentences made ahead of the one playing
+GAPS = 3      # more "voice behind" gaps than this in a run: more threads next run
 LAG = 0.3     # s: waiting longer than this for the next sentence is a gap you hear, so it is logged
 STALL = 4.0   # s: a player that takes no audio this long is stuck (its output is dead)
 
@@ -560,6 +563,12 @@ class Speaker:
             return
         cut_off = self.last if time.monotonic() < self.until else None
         self.cut()
+        try:
+            who = open(PAUSED).read().strip()
+        except OSError:
+            who = ""
+        if not who:   # not made by pause(), which says who asked
+            log("paused by: unknown (the paused marker appeared without saying who made it)")
         write_json(NOW, {**((cut_off or self.last or [None])[0] or read_json(NOW) or {}),
                          "paused": True, "waiting": len(queued())})
         while os.path.exists(PAUSED):
@@ -638,16 +647,18 @@ def skip(source=None):
 def pause(source="pause key"):
     """Pause, or resume if paused. Replies that arrive meanwhile keep queuing. Every pause
     and resume is logged with what asked for it."""
+    who = f"{source} [pid {os.getpid()}, {caller().removeprefix('command line ')}]"
     if os.path.exists(PAUSED):
         os.remove(PAUSED)
-        log(f"resumed by: {source}")
+        log(f"resumed by: {who}")
         return "resumed"
     pid = worker_pid()
     if not pid:
         notify("Nothing is being read")
         return ""
-    open(PAUSED, "w").close()
-    log(f"paused by: {source}")
+    with open(PAUSED, "w") as f:
+        f.write(who)   # the worker logs any pause whose marker says nothing (made by something else)
+    log(f"paused by: {who}")
     try:
         os.kill(pid, signal.SIGUSR1)
     except OSError:
@@ -655,12 +666,28 @@ def pause(source="pause key"):
     return "paused"
 
 
+NICE = 10        # low priority: other work comes first, yet a fully busy PC can't starve the voice
+                 # (nice 19 weighs 15 against 1024 and can't be undone without root)
+FAST_ENOUGH = 3.0   # speech made this many times faster than it plays: the fewest cores doing it win
+TOO_SLOW = 1.5      # below this even the best count can't keep up without gaps
+GPUS = ("CUDAExecutionProvider", "ROCMExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider")
+CALIBRATE_TEXT = ("This sentence times the voice on this computer, without playing it.",
+                  "The fewest processor cores that keep well ahead of speech are used.")
+
+
 def lower_priority():
-    """Everything else on the PC comes first: lowest CPU priority, idle disk priority."""
+    """Everything else on the PC comes first: nice 10, idle disk priority."""
     try:
-        os.nice(19 - os.nice(0))
+        os.nice(max(0, NICE - os.nice(0)))
     except OSError:
         pass
+    # With autogroup scheduling (on by default on Ubuntu and Omarchy) nice only ranks a process
+    # against its own session, and the worker is a session of its own: lower the whole group too.
+    try:
+        with open("/proc/self/autogroup", "w") as f:
+            f.write(str(NICE))
+    except OSError:
+        pass  # no autogroup (or not Linux): nice alone does it
     try:
         subprocess.run(["ionice", "-c3", "-p", str(os.getpid())], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, check=False, timeout=5)
@@ -668,23 +695,167 @@ def lower_priority():
         pass  # no ionice: CPU priority alone
 
 
-def voice_engine(conf):
-    """Kokoro on an onnxruntime session we build: by default onnxruntime uses every core and keeps
-    them busy-waiting between steps (about 25 of 32 busy on Souko), which froze the PC while reading."""
+def cores():
+    """(logical, physical) CPUs this process may run on (a container's or taskset's limit counts);
+    hyperthread siblings are one physical core."""
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = list(range(os.cpu_count() or 1))
+    siblings = set()
+    for c in cpus:
+        try:
+            with open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list") as f:
+                siblings.add(f.read().strip())
+        except OSError:
+            siblings.add(str(c))   # unknown: count it as a core of its own
+    return len(cpus), len(siblings)
+
+
+def cpu_model():
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith(("model name", "Hardware", "Model")):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    import platform
+    return platform.processor() or platform.machine()
+
+
+def thread_steps(physical):
+    """1, 2, 4 ... up to half the physical cores (at least 1): the voice never takes more."""
+    cap = max(1, physical // 2)
+    steps, n = [], 1
+    while n < cap:
+        steps.append(n)
+        n *= 2
+    return steps + [cap]
+
+
+def choose(speeds):
+    """{threads: times faster than speech} -> the fewest threads fast enough, else the fastest."""
+    fast = [t for t in sorted(speeds) if speeds[t] >= FAST_ENOUGH]
+    return fast[0] if fast else max(speeds, key=lambda t: (speeds[t], -t))
+
+
+def providers(conf, available):
+    """ONNX_PROVIDER wins (as in kokoro_onnx); else a GPU onnxruntime offers, if use_gpu allows; CPU after."""
+    if os.getenv("ONNX_PROVIDER"):
+        return [os.getenv("ONNX_PROVIDER")]
+    use = str(conf.get("use_gpu", "auto")).lower()
+    gpu = [p for p in GPUS if p in available][:1] if use not in ("no", "off", "false", "0") else []
+    return gpu + ["CPUExecutionProvider"]
+
+
+def session(threads, chosen):
     import onnxruntime as rt
-    from kokoro_onnx import Kokoro
-    threads = max(1, min(int(conf.get("cpu_threads") or 4), os.cpu_count() or 1))
-    if conf.get("low_priority", True):
-        lower_priority()
     opts = rt.SessionOptions()
     opts.intra_op_num_threads = threads
     opts.inter_op_num_threads = 1
     opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
     opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
-    providers = [os.getenv("ONNX_PROVIDER") or "CPUExecutionProvider"]   # as kokoro_onnx does
-    session = rt.InferenceSession(f"{MODELS}/kokoro-v1.0.onnx", sess_options=opts, providers=providers)
-    log(f"voice: {threads} threads, no spinning, {providers[0]}, nice {os.nice(0)}")
-    return Kokoro.from_session(session, f"{MODELS}/voices-v1.0.bin")
+    return rt.InferenceSession(f"{MODELS}/kokoro-v1.0.onnx", sess_options=opts, providers=chosen)
+
+
+def machine(conf):
+    """What a calibration is good for: it is redone when any of this changes."""
+    import onnxruntime as rt
+    logical, physical = cores()
+    return {"cpu": cpu_model(), "physical": physical, "logical": logical, "onnxruntime": rt.__version__,
+            "providers": providers(conf, rt.get_available_providers())}
+
+
+def speed_of(threads, chosen, conf):
+    """Times faster than speech with this many threads (silent: the audio is never played)."""
+    from kokoro_onnx import Kokoro
+    kokoro = Kokoro.from_session(session(threads, chosen), f"{MODELS}/voices-v1.0.bin")
+    kokoro.create("Warm up.", voice=conf["voice"], speed=1.0, lang="en-us")
+    t0, audio = time.monotonic(), 0.0
+    for text in CALIBRATE_TEXT:
+        samples, rate = kokoro.create(text, voice=conf["voice"], speed=1.0, lang="en-us")
+        audio += len(samples) / rate
+    return audio / max(time.monotonic() - t0, 1e-6)
+
+
+def calibrate(conf, measure=speed_of, here=None):
+    """Time the voice at 1, 2, 4 ... threads, keep the fewest that are fast enough (calibration.json)."""
+    here = here or machine(conf)
+    speeds = {}
+    for t in thread_steps(here["physical"]):
+        speeds[t] = round(measure(t, here["providers"], conf), 1)
+        if speeds[t] >= FAST_ENOUGH:
+            break   # more threads would only take cores from everything else
+    threads = choose(speeds)
+    cal = {**here, "threads": threads, "speed": speeds[threads], "speeds": speeds,
+           "too_slow": speeds[threads] < TOO_SLOW, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    os.makedirs(STATE, exist_ok=True)
+    write_json(CALIBRATION, cal)
+    log(f"calibrated: {threads} thread{'' if threads == 1 else 's'}, {cal['speed']}x faster than speech ({here['cpu']}, {here['physical']} cores, "
+        f"{here['providers'][0]}; tried {speeds})" + ("; too slow to read without gaps" if cal["too_slow"] else ""))
+    return cal
+
+
+def calibration(conf, measure=speed_of):
+    """The saved calibration if it was made on this machine as it is now, else a new one."""
+    here = machine(conf)
+    cal = read_json(CALIBRATION) or {}
+    if all(cal.get(k) == v for k, v in here.items()) and cal.get("threads"):
+        return cal
+    return calibrate(conf, measure, here)
+
+
+def step_up(conf):
+    """Many gaps in a run: the next run gets one more step of threads (up to the cap)."""
+    cal = read_json(CALIBRATION) or {}
+    if not cal.get("threads") or not auto_threads(conf):
+        return None
+    bigger = [t for t in thread_steps(cal.get("physical") or 1) if t > cal["threads"]]
+    if not bigger:
+        return None
+    cal["threads"], cal["raised"] = bigger[0], time.strftime("%Y-%m-%d %H:%M:%S")
+    write_json(CALIBRATION, cal)
+    log(f"voice fell behind often: {cal['threads']} threads from the next run")
+    return cal["threads"]
+
+
+def auto_threads(conf):
+    v = str(conf.get("cpu_threads", "auto")).strip().lower()
+    return v in ("", "auto", "0") or not v.lstrip("-").isdigit() or int(v) <= 0
+
+
+def free_memory_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def voice_engine(conf, measure=speed_of):
+    """Kokoro on an onnxruntime session we build: by default onnxruntime uses every core and keeps
+    them busy-waiting between steps (about 25 of 32 busy on Souko), which froze the PC while reading.
+    The threads are measured per machine (calibration) unless cpu_threads names a number."""
+    import onnxruntime as rt
+    from kokoro_onnx import Kokoro
+    if conf.get("low_priority", True):
+        lower_priority()
+    free = free_memory_mb()
+    if free is not None and free < 2048:
+        log(f"low memory: {free} MB available; the voice needs about 350 MB and may be slow or fail")
+    if auto_threads(conf):
+        cal = calibration(conf, measure)
+        threads, chosen, how = cal["threads"], cal["providers"], f"measured {cal['speed']}x"
+    else:
+        logical, _ = cores()
+        threads = max(1, min(int(conf["cpu_threads"]), logical))
+        chosen, how = providers(conf, rt.get_available_providers()), "set"
+    log(f"voice: {threads} threads ({how}), no spinning, {chosen[0]}, nice {os.nice(0)}")
+    return Kokoro.from_session(session(threads, chosen), f"{MODELS}/voices-v1.0.bin")
 
 
 def worker():
@@ -772,6 +943,7 @@ def worker():
                     break
                 waited = time.monotonic() - max(asked, speaker.until)   # silence after the last sentence ended
                 if waited > LAG and not os.path.exists(PAUSED):
+                    gaps.append(waited)
                     log(f"voice behind: {waited:.1f} s of silence before sentence {i + 1} of {len(segs)}"
                         f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
                 speaker.play(status, pcm)
@@ -785,7 +957,7 @@ def worker():
         reader = subprocess.Popen(["python3", os.path.abspath(__file__), "open"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         threading.Thread(target=reader.wait, daemon=True).start()   # reaped: no <defunct> left
-    number = 0
+    number, gaps = 0, []
     log(f"reading starts (worker {os.getpid()})")
     while True:
         item = next_item()
@@ -828,6 +1000,8 @@ def worker():
         except NoOutput:
             return no_output()
     log("reading finished")
+    if len(gaps) > GAPS:
+        step_up(conf)
     speaker.close()
 
 
@@ -1338,6 +1512,15 @@ def view():
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
+def voice_status():
+    cal = read_json(CALIBRATION) or {}
+    if not cal:
+        return "not measured yet (it is, silently, before the first reading)"
+    out = f"{cal['threads']} core{'' if cal['threads'] == 1 else 's'}, {cal['speed']}x faster than speech on {cal.get('providers', ['CPU'])[0]}"
+    return ("This computer is too slow for the local voice to read without gaps (" + out + ")"
+            if cal.get("too_slow") else out)
+
+
 def status(outputs=None):
     """muted / reading / installed, the output in use (or that would be used) and any
     output in error, for the dashboard's Status button."""
@@ -1351,6 +1534,7 @@ def status(outputs=None):
     return {"muted": os.path.exists(MUTE), "reading": reading, "waiting": len(queued()), "opacity": opacity(),
             "output": playing.get("output"), "output_why": playing.get("why"),
             "outputs_in_error": [f"{s['label']}: {s['error'] or 'error'}" for s in outputs if s["state"] == "error"],
+            "voice": voice_status(),
             "venv": os.path.exists(PY), "models": all(os.path.exists(f"{MODELS}/{f}")
                                                      for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"))}
 
@@ -1398,6 +1582,14 @@ def main():
                  "segments": segments("This is the read aloud voice. If you can hear this, it works.")})
     elif cmd == "status":
         print(json.dumps(status()))
+    elif cmd == "calibrate":
+        conf = settings()
+        if conf.get("low_priority", True):
+            lower_priority()   # measured as the voice will run
+        cal = calibrate(conf)
+        print(f"voice: {cal['threads']} core{'' if cal['threads'] == 1 else 's'}, {cal['speed']}x faster than speech ({cal['cpu']}, {cal['providers'][0]})")
+        if cal["too_slow"]:
+            print("This computer is too slow for the local voice to read without gaps.")
     elif cmd == "stop":
         stop()
     elif cmd == "repeat":
