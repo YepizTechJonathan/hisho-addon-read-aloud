@@ -1,5 +1,5 @@
 # Read aloud: every Claude Code reply on the workstation (Souko) is read aloud with Kokoro, a local
-# voice model that runs on the CPU, in full. A reply that arrives while another is being read waits
+# voice model that runs on the CPU (4 cores at lowest priority by default), in full. A reply that arrives while another is being read waits
 # its turn; Repeat replays the whole last run; "From: <thread>." is said when the voice moves to another
 # thread. The name is one typed with N in the reader or on this page, else the "Thread: <title>" line
 # the project's assistant puts in its notes, else the session title or the first message. A reader window opens
@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.9.3
+version: 0.10.0
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -28,6 +28,8 @@ options:
   auto_pause: true                 # opening the thread pauses reading; the pause key resumes
   title_size: 2                    # thread name in the reader, times normal (1-4; needs kitty, else 1)
   fallback_output: ""              # PipeWire node.name to read on when the default output is broken; "" picks one (a headset before HDMI)
+  cpu_threads: 4                   # processor cores the voice may use while making speech
+  low_priority: true               # lowest CPU and disk priority: everything else comes first
   key_read: SUPER + ALT + T        # read the highlighted text (or clipboard); stops reading if it is
   key_repeat: SUPER + ALT + R
   key_stop: SUPER + ALT + X
@@ -47,6 +49,8 @@ schema:
   auto_pause: bool
   title_size: int
   fallback_output: str?
+  cpu_threads: int
+  low_priority: bool
   key_read: str                    # "none" leaves a key out
   key_repeat: str
   key_stop: str
@@ -138,6 +142,12 @@ help:
   fallback_output:
     label: Backup speaker (optional)
     say: "Where to play when the usual speaker is broken: a PipeWire output name. Leave empty and it picks one itself (a headset before a TV)."
+  cpu_threads:
+    label: Processor cores for the voice
+    say: "How many processor cores the voice may use while making speech. 4 is fast and leaves the rest of the computer free."
+  low_priority:
+    label: Let other work come first
+    say: "Let everything else you do come first; the voice still keeps up."
   key_read:
     label: Key to read the selected text
     say: "A keyboard shortcut, like SUPER + ALT + T: reads the highlighted text (or what you copied); pressed while reading, it stops. Type none to have no key. A key already used elsewhere is refused."

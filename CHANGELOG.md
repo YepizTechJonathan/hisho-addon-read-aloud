@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+- The voice no longer makes the PC unusable while it reads. onnxruntime used every core and kept them busy-waiting (about 25 of 32 busy on Souko, 74 CPU-seconds for 14 s of speech). It now uses 4 cores with no busy-waiting, at the lowest CPU and disk priority: 5.4 CPU-seconds for the same speech, and faster (1.8 s instead of 2.5 s). New settings `cpu_threads` (default 4) and `low_priority` (default on).
+- Up to 4 sentences are made ahead of the one playing (was 2), and more than 0.3 s of silence because the next sentence wasn't made yet is logged ("voice behind: 0.8 s of silence before sentence 3 of 12 (240 characters)"), so a silence that isn't a pause can be explained afterwards.
+
 ## 0.9.3
 
 - Every field on its setup form says in plain words what it is, and links to where to get it (addon.yaml `help:`, shown by Hisho's dashboard).

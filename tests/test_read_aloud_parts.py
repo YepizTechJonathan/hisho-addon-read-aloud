@@ -2,8 +2,10 @@
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
+import types
 
 import pytest
 from importlib import util
@@ -22,10 +24,36 @@ def _load(name, path):
 
 
 ra = _load("read_aloud", HERE / "read_aloud.py")
+LOWER_PRIORITY = ra.lower_priority   # the real one (the fake voice replaces it)
 
 CONF = dict(ra.DEFAULTS)
 SINKS = ra.sinks   # the real one; tests never ask this machine's PipeWire
 SAMPLE = json.loads((HERE / "tests" / "pw-dump-sample.json").read_text())   # Souko with Dante broken
+
+
+class _Session:
+    """Stands in for onnxruntime: records how the voice's session is set up."""
+    made = []
+
+    class SessionOptions:
+        def __init__(self):
+            self.config = {}
+
+        def add_session_config_entry(self, key, value):
+            self.config[key] = value
+
+    def InferenceSession(path, sess_options=None, providers=None):
+        _Session.made.append((path, sess_options, providers))
+        return types.SimpleNamespace(opts=sess_options)
+
+
+def _fake_voice(monkeypatch, voice):
+    """kokoro_onnx (and onnxruntime) with Kokoro.from_session giving `voice`; priority left alone."""
+    _Session.made = []
+    monkeypatch.setitem(sys.modules, "onnxruntime", _Session)
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(
+        Kokoro=types.SimpleNamespace(from_session=lambda session, voices: voice)))
+    monkeypatch.setattr(ra, "lower_priority", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -136,10 +164,9 @@ def test_a_reply_arriving_while_the_last_sentence_still_plays_waits_in_the_same_
     monkeypatch.setattr(ra, "notify", lambda *a, **k: None)
     monkeypatch.setattr(ra.signal, "signal", lambda *a: None)
     np = types.SimpleNamespace(clip=lambda a, lo, hi: a, int16="int16")
-    kokoro = types.SimpleNamespace(Kokoro=lambda *a: types.SimpleNamespace(
-        create=lambda text, **k: (_Audio(int(ra.RATE * 0.6)), ra.RATE)))   # every sentence: 0.6 s
     monkeypatch.setitem(sys.modules, "numpy", np)
-    monkeypatch.setitem(sys.modules, "kokoro_onnx", kokoro)
+    _fake_voice(monkeypatch, types.SimpleNamespace(
+        create=lambda text, **k: (_Audio(int(ra.RATE * 0.6)), ra.RATE)))   # every sentence: 0.6 s
     heard = []
 
     class Player:  # takes the audio at once, like a pipe with room to spare
@@ -259,9 +286,8 @@ def test_pause_silences_at_once_and_resume_starts_that_sentence_again(tmp_path, 
             super().__init__(int(ra.RATE * 0.4))   # every sentence: 0.4 s
             self.text = text
     np = types.SimpleNamespace(clip=lambda a, lo, hi: a, int16="int16")
-    kokoro = types.SimpleNamespace(Kokoro=lambda *a: types.SimpleNamespace(create=lambda text, **k: (Audio(text), ra.RATE)))
     monkeypatch.setitem(sys.modules, "numpy", np)
-    monkeypatch.setitem(sys.modules, "kokoro_onnx", kokoro)
+    _fake_voice(monkeypatch, types.SimpleNamespace(create=lambda text, **k: (Audio(text), ra.RATE)))
     heard = []   # (player number, sentence) in the order handed to a player
 
     class Player:
@@ -336,9 +362,8 @@ def test_skip_ends_the_reply_and_goes_on_with_the_next_one_waiting(tmp_path, mon
             super().__init__(int(ra.RATE * 0.4))   # every sentence: 0.4 s
             self.text = text
     np = types.SimpleNamespace(clip=lambda a, lo, hi: a, int16="int16")
-    kokoro = types.SimpleNamespace(Kokoro=lambda *a: types.SimpleNamespace(create=lambda text, **k: (Audio(text), ra.RATE)))
     monkeypatch.setitem(sys.modules, "numpy", np)
-    monkeypatch.setitem(sys.modules, "kokoro_onnx", kokoro)
+    _fake_voice(monkeypatch, types.SimpleNamespace(create=lambda text, **k: (Audio(text), ra.RATE)))
     heard = []   # (player number, sentence) in the order handed to a player
 
     class Player:
@@ -734,7 +759,7 @@ def test_with_no_output_left_the_run_stops_and_is_kept_for_repeat(tmp_path, monk
     monkeypatch.setattr(ra, "notify", lambda msg, *a: told.append(msg))
     monkeypatch.setattr(ra.signal, "signal", lambda *a: None)
     monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
-    monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(Kokoro=lambda *a: None))
+    _fake_voice(monkeypatch, None)
     made = _real_players(monkeypatch, deaf=lambda cmd: False)
     ra.enqueue({"source": "A", "segments": ra.segments("One.")})
     ra.enqueue({"source": "B", "segments": ra.segments("Two.")})
@@ -769,3 +794,75 @@ def test_a_stall_while_pipewire_does_not_answer_stops_instead_of_looping(tmp_pat
     assert len(made) == 1 and made[0][1].poll() is not None   # one player, killed: no retry loop
     assert told[-1] == "No working audio output"
     assert "PipeWire lists no outputs or does not answer" in (tmp_path / "read-aloud.log").read_text()
+
+
+def test_the_voice_uses_a_few_cores_without_busy_waiting_at_lowest_priority(monkeypatch):
+    """Seen on Souko: onnxruntime's defaults kept about 25 of 32 cores busy and froze the PC."""
+    _fake_voice(monkeypatch, "voice")
+    monkeypatch.delenv("ONNX_PROVIDER", raising=False)
+    niced, ran = [], []
+    monkeypatch.setattr(ra.os, "nice", lambda n: niced.append(n) or 0)
+    monkeypatch.setattr(ra.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    monkeypatch.setattr(ra, "lower_priority", LOWER_PRIORITY)
+    monkeypatch.setattr(ra, "log", lambda event: None)
+    assert ra.voice_engine({**ra.DEFAULTS}) == "voice"
+    (path, opts, providers), = _Session.made
+    assert path.endswith("kokoro-v1.0.onnx") and providers == ["CPUExecutionProvider"]
+    assert opts.intra_op_num_threads == 4 and opts.inter_op_num_threads == 1
+    assert opts.config == {"session.intra_op.allow_spinning": "0", "session.inter_op.allow_spinning": "0"}
+    assert 19 in niced and ran[0][:2] == ["ionice", "-c3"]
+
+
+def test_cpu_threads_is_kept_between_one_and_the_cores_there_are(monkeypatch):
+    _fake_voice(monkeypatch, "voice")
+    monkeypatch.setattr(ra, "log", lambda event: None)
+    monkeypatch.setattr(ra.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("ONNX_PROVIDER", "CUDAExecutionProvider")
+    for asked, used in ((0, 4), (-3, 1), (2, 2), (64, 8)):
+        _Session.made = []
+        ra.voice_engine({**ra.DEFAULTS, "cpu_threads": asked, "low_priority": False})
+        assert _Session.made[0][1].intra_op_num_threads == used
+        assert _Session.made[0][2] == ["CUDAExecutionProvider"]
+
+
+def test_low_priority_off_leaves_priority_alone(monkeypatch):
+    _fake_voice(monkeypatch, "voice")
+    called = []
+    monkeypatch.setattr(ra, "lower_priority", lambda: called.append(1))
+    monkeypatch.setattr(ra, "log", lambda event: None)
+    ra.voice_engine({**ra.DEFAULTS, "low_priority": False})
+    assert called == []
+
+
+def test_a_gap_while_the_voice_makes_the_next_sentence_is_logged(tmp_path, monkeypatch):
+    """Silences that are not pauses: the next sentence wasn't ready (a long one, a busy PC)."""
+    state = tmp_path / "state"
+    for name, value in {"STATE": state, "QUEUE": state / "queue", "RUN": state / "last-run.jsonl",
+                        "NOW": state / "now.json", "LOCK": state / "worker.lock", "PAUSED": state / "paused",
+                        "PIDFILE": state / "worker.pid", "CONFIG": tmp_path / "none.json"}.items():
+        monkeypatch.setattr(ra, name, str(value))
+    monkeypatch.setattr(ra, "settings", lambda: {**ra.DEFAULTS, "auto_open": False})
+    monkeypatch.setattr(ra, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(ra.signal, "signal", lambda *a: None)
+    monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace(clip=lambda a, lo, hi: a, int16="int16"))
+
+    def create(text, **k):
+        if text.startswith("Slow"):
+            time.sleep(0.6)
+        return _Audio(int(ra.RATE * 0.05)), ra.RATE   # every sentence plays 0.05 s
+    _fake_voice(monkeypatch, types.SimpleNamespace(create=create))
+
+    class Player:
+        def __init__(self, *a, **k):
+            self.stdin = types.SimpleNamespace(write=lambda b: None, flush=lambda: None, close=lambda: None)
+
+        def wait(self):
+            return 0
+    monkeypatch.setattr(ra.subprocess, "Popen", Player)
+    _hand_over_at_once(monkeypatch)
+    ra.enqueue({"source": "A", "segments": ra.segments("Quick one. Slow and long one here.")})
+    _in_thread(ra.worker)
+
+    log = (state / "read-aloud.log").read_text()
+    assert "voice behind: 0." in log and "s of silence before sentence 2 of 2 (23 characters)" in log
+    assert "sentence 1 of 2" not in log

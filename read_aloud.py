@@ -48,7 +48,7 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
-            "fallback_output": ""}
+            "fallback_output": "", "cpu_threads": 4, "low_priority": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
@@ -418,6 +418,8 @@ def pick_output(outputs, fallback="", avoid=()):
     return chosen, f"{default['label']} is in error ({default['error'] or 'no reason given'})"
 
 
+AHEAD = 4     # sentences made ahead of the one playing
+LAG = 0.3     # s: waiting longer than this for the next sentence is a gap you hear, so it is logged
 STALL = 4.0   # s: a player that takes no audio this long is stuck (its output is dead)
 
 
@@ -653,6 +655,38 @@ def pause(source="pause key"):
     return "paused"
 
 
+def lower_priority():
+    """Everything else on the PC comes first: lowest CPU priority, idle disk priority."""
+    try:
+        os.nice(19 - os.nice(0))
+    except OSError:
+        pass
+    try:
+        subprocess.run(["ionice", "-c3", "-p", str(os.getpid())], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # no ionice: CPU priority alone
+
+
+def voice_engine(conf):
+    """Kokoro on an onnxruntime session we build: by default onnxruntime uses every core and keeps
+    them busy-waiting between steps (about 25 of 32 busy on Souko), which froze the PC while reading."""
+    import onnxruntime as rt
+    from kokoro_onnx import Kokoro
+    threads = max(1, min(int(conf.get("cpu_threads") or 4), os.cpu_count() or 1))
+    if conf.get("low_priority", True):
+        lower_priority()
+    opts = rt.SessionOptions()
+    opts.intra_op_num_threads = threads
+    opts.inter_op_num_threads = 1
+    opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    providers = [os.getenv("ONNX_PROVIDER") or "CPUExecutionProvider"]   # as kokoro_onnx does
+    session = rt.InferenceSession(f"{MODELS}/kokoro-v1.0.onnx", sess_options=opts, providers=providers)
+    log(f"voice: {threads} threads, no spinning, {providers[0]}, nice {os.nice(0)}")
+    return Kokoro.from_session(session, f"{MODELS}/voices-v1.0.bin")
+
+
 def worker():
     os.makedirs(QUEUE, exist_ok=True)
     lock = open(LOCK, "w")
@@ -676,11 +710,9 @@ def worker():
 
     import queue, threading
     import numpy as np
-    from kokoro_onnx import Kokoro
-
     conf = settings()
     voice, speed = conf["voice"], int(conf["speed"]) / 100
-    kokoro = Kokoro(f"{MODELS}/kokoro-v1.0.onnx", f"{MODELS}/voices-v1.0.bin")
+    kokoro = voice_engine(conf)
     try:
         os.remove(PAUSED)  # a new run never starts paused
     except OSError:
@@ -709,7 +741,7 @@ def worker():
 
     def read(item, number):
         segs = item["segments"]
-        ready, done = queue.Queue(maxsize=2), threading.Event()
+        ready, done = queue.Queue(maxsize=AHEAD), threading.Event()
 
         def make():  # make the next sentence's audio while this one plays
             for seg in segs:
@@ -730,7 +762,7 @@ def worker():
                 status = {"source": item.get("source", ""), "asked": item.get("asked", ""),
                           "thread": item.get("thread", ""), "url": item.get("url", ""), "segments": segs,
                           "current": i, "number": number}
-                pcm = None
+                pcm, asked = None, time.monotonic()
                 while pcm is None and not speaker.skipping:
                     try:
                         pcm = ready.get(timeout=0.2)
@@ -738,6 +770,10 @@ def worker():
                         pass
                 if speaker.skipping:
                     break
+                waited = time.monotonic() - max(asked, speaker.until)   # silence after the last sentence ended
+                if waited > LAG and not os.path.exists(PAUSED):
+                    log(f"voice behind: {waited:.1f} s of silence before sentence {i + 1} of {len(segs)}"
+                        f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
                 speaker.play(status, pcm)
         finally:
             done.set()
