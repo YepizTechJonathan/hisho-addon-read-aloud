@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.10.0
+version: 0.10.1
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -146,7 +146,7 @@ help:
     say: "Where to play when the usual speaker is broken: a PipeWire output name. Leave empty and it picks one itself (a headset before a TV)."
   cpu_threads:
     label: Processor cores for the voice
-    say: "How many processor cores the voice may use while making speech. Leave it on auto: it times the voice on this computer, silently, and picks the fewest cores that keep well ahead of speech (never more than half). Type a number only to override it."
+    say: "How many processor cores the voice may use while making speech. Leave it on auto: it times the voice on this computer, silently, and picks the fewest cores that start a reply in about half a second and keep well ahead of speech (never more than half). Type a number only to override it."
   use_gpu:
     label: Use the graphics card
     say: "auto uses the graphics card when its voice engine (onnxruntime-gpu) is installed, else the processor. Type no to always use the processor."

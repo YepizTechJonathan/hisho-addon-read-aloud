@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- Replies start in about half a second on any computer. The calibration now keeps the fewest threads (still at most half the real cores) that make speech at least 5 times faster than it plays and a typical first sentence (about 15 words) in 0.6 s or less; when none does both, the one that starts soonest. 0.10.0 kept the fewest 3 times faster, which on Souko was 1 thread and a first sentence after about 1.5 s. The first-sentence time is kept in calibration.json and shown in Status. A calibration made by an older rule is redone (calibration.json `rule`).
+
 ## 0.10.0
 
 - Reading no longer pauses by itself. Hisho's hourly code sync runs these tests on Souko, and a test that opens the thread found the real worker.pid and paused the real reading (SIGUSR1, with its log line swallowed), the "random" pauses seen on Souko (Nov 5 20:25:57 and 22:04:51). Every test now runs in a scratch state folder, checked by a test. Every pause and resume logs what asked for it with the pid and the processes it came from, and a paused marker made by anything else is logged as "paused by: unknown".

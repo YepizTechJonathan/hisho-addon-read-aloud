@@ -668,11 +668,13 @@ def pause(source="pause key"):
 
 NICE = 10        # low priority: other work comes first, yet a fully busy PC can't starve the voice
                  # (nice 19 weighs 15 against 1024 and can't be undone without root)
-FAST_ENOUGH = 3.0   # speech made this many times faster than it plays: the fewest cores doing it win
+FAST_ENOUGH = 5.0   # speech made this many times faster than it plays, and
+FIRST_IN = 0.6      # s: a typical first sentence (about 15 words) ready this soon: the fewest cores doing both win
 TOO_SLOW = 1.5      # below this even the best count can't keep up without gaps
+RULE = 2            # how the cores are chosen; a calibration made by another rule is redone
 GPUS = ("CUDAExecutionProvider", "ROCMExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider")
-CALIBRATE_TEXT = ("This sentence times the voice on this computer, without playing it.",
-                  "The fewest processor cores that keep well ahead of speech are used.")
+CALIBRATE_TEXT = ("This sentence times the voice on this computer without playing it, to pick how many cores.",
+                  "The fewest processor cores that start a reply quickly and keep well ahead of speech are used.")
 
 
 def lower_priority():
@@ -734,10 +736,16 @@ def thread_steps(physical):
     return steps + [cap]
 
 
-def choose(speeds):
-    """{threads: times faster than speech} -> the fewest threads fast enough, else the fastest."""
-    fast = [t for t in sorted(speeds) if speeds[t] >= FAST_ENOUGH]
-    return fast[0] if fast else max(speeds, key=lambda t: (speeds[t], -t))
+def good(result):
+    speed, first = result
+    return speed >= FAST_ENOUGH and first <= FIRST_IN
+
+
+def choose(results):
+    """{threads: (times faster than speech, first sentence in s)} -> the fewest threads that start soon
+    enough and keep ahead, else the one that starts soonest (the fastest on a tie)."""
+    fast = [t for t in sorted(results) if good(results[t])]
+    return fast[0] if fast else min(results, key=lambda t: (results[t][1], -results[t][0], t))
 
 
 def providers(conf, available):
@@ -768,32 +776,38 @@ def machine(conf):
 
 
 def speed_of(threads, chosen, conf):
-    """Times faster than speech with this many threads (silent: the audio is never played)."""
+    """(times faster than speech, seconds to make the first sentence) with this many threads
+    (silent: the audio is never played)."""
     from kokoro_onnx import Kokoro
     kokoro = Kokoro.from_session(session(threads, chosen), f"{MODELS}/voices-v1.0.bin")
     kokoro.create("Warm up.", voice=conf["voice"], speed=1.0, lang="en-us")
-    t0, audio = time.monotonic(), 0.0
+    t0, audio, first = time.monotonic(), 0.0, None
     for text in CALIBRATE_TEXT:
         samples, rate = kokoro.create(text, voice=conf["voice"], speed=1.0, lang="en-us")
         audio += len(samples) / rate
-    return audio / max(time.monotonic() - t0, 1e-6)
+        first = first or time.monotonic() - t0
+    return audio / max(time.monotonic() - t0, 1e-6), first
 
 
 def calibrate(conf, measure=speed_of, here=None):
-    """Time the voice at 1, 2, 4 ... threads, keep the fewest that are fast enough (calibration.json)."""
+    """Time the voice at 1, 2, 4 ... threads, keep the fewest fast enough (calibration.json)."""
     here = here or machine(conf)
-    speeds = {}
+    results = {}
     for t in thread_steps(here["physical"]):
-        speeds[t] = round(measure(t, here["providers"], conf), 1)
-        if speeds[t] >= FAST_ENOUGH:
+        speed, first = measure(t, here["providers"], conf)
+        results[t] = (round(speed, 1), round(first, 2))
+        if good(results[t]):
             break   # more threads would only take cores from everything else
-    threads = choose(speeds)
-    cal = {**here, "threads": threads, "speed": speeds[threads], "speeds": speeds,
-           "too_slow": speeds[threads] < TOO_SLOW, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    threads = choose(results)
+    speed, first = results[threads]
+    cal = {**here, "rule": RULE, "threads": threads, "speed": speed, "first_sentence_s": first,
+           "tried": {t: {"speed": v[0], "first_sentence_s": v[1]} for t, v in results.items()},
+           "too_slow": speed < TOO_SLOW, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     os.makedirs(STATE, exist_ok=True)
     write_json(CALIBRATION, cal)
-    log(f"calibrated: {threads} thread{'' if threads == 1 else 's'}, {cal['speed']}x faster than speech ({here['cpu']}, {here['physical']} cores, "
-        f"{here['providers'][0]}; tried {speeds})" + ("; too slow to read without gaps" if cal["too_slow"] else ""))
+    log(f"calibrated: {threads} thread{'' if threads == 1 else 's'}, {speed}x faster than speech, first sentence in {first} s "
+        f"({here['cpu']}, {here['physical']} cores, {here['providers'][0]}; tried {results})"
+        + ("; too slow to read without gaps" if cal["too_slow"] else ""))
     return cal
 
 
@@ -801,7 +815,7 @@ def calibration(conf, measure=speed_of):
     """The saved calibration if it was made on this machine as it is now, else a new one."""
     here = machine(conf)
     cal = read_json(CALIBRATION) or {}
-    if all(cal.get(k) == v for k, v in here.items()) and cal.get("threads"):
+    if all(cal.get(k) == v for k, v in here.items()) and cal.get("threads") and cal.get("rule") == RULE:
         return cal
     return calibrate(conf, measure, here)
 
@@ -1516,7 +1530,9 @@ def voice_status():
     cal = read_json(CALIBRATION) or {}
     if not cal:
         return "not measured yet (it is, silently, before the first reading)"
-    out = f"{cal['threads']} core{'' if cal['threads'] == 1 else 's'}, {cal['speed']}x faster than speech on {cal.get('providers', ['CPU'])[0]}"
+    out = (f"{cal['threads']} core{'' if cal['threads'] == 1 else 's'}, {cal['speed']}x faster than speech"
+           + (f", first sentence in {cal['first_sentence_s']} s" if "first_sentence_s" in cal else "")
+           + f" on {cal.get('providers', ['CPU'])[0]}")
     return ("This computer is too slow for the local voice to read without gaps (" + out + ")"
             if cal.get("too_slow") else out)
 
@@ -1587,9 +1603,7 @@ def main():
         if conf.get("low_priority", True):
             lower_priority()   # measured as the voice will run
         cal = calibrate(conf)
-        print(f"voice: {cal['threads']} core{'' if cal['threads'] == 1 else 's'}, {cal['speed']}x faster than speech ({cal['cpu']}, {cal['providers'][0]})")
-        if cal["too_slow"]:
-            print("This computer is too slow for the local voice to read without gaps.")
+        print(f"voice: {voice_status()} ({cal['cpu']})")   # says plainly when the computer is too slow
     elif cmd == "stop":
         stop()
     elif cmd == "repeat":

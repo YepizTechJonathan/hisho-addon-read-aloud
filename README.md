@@ -19,7 +19,8 @@ hangs silently. The dashboard's **Status** shows the output in use and any outpu
 
 The voice fits each computer and leaves it free while it reads. On install and update it is
 timed silently (`read_aloud.py calibrate`, also redone when the processor or onnxruntime changes)
-and uses the fewest processor cores that make speech at least 3 times faster than it plays,
+and uses the fewest processor cores that make speech at least 5 times faster than it plays and a
+first sentence in 0.6 s or less (else the quickest to start),
 never more than half the real cores; a run with many gaps moves it up one step. It runs at low
 priority (nice 10, idle disk), with no busy-waiting. A computer too slow even then is told so
 plainly at install and in **Status**. A graphics card is used when onnxruntime offers one

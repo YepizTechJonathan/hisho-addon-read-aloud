@@ -878,40 +878,49 @@ def _calibrate_env(tmp_path, monkeypatch):
     return logged
 
 
-@pytest.mark.parametrize("physical,speeds,threads,tried", [
-    (16, {1: 2.0, 2: 3.4, 4: 6.0, 8: 9.0}, 2, [1, 2]),        # the fewest fast enough; stops there
-    (16, {1: 3.1}, 1, [1]),
-    (8, {1: 1.0, 2: 1.9, 4: 2.6}, 4, [1, 2, 4]),              # none fast enough: the fastest
-    (4, {1: 1.2, 2: 2.2}, 2, [1, 2]),
-    (2, {1: 2.5}, 1, [1]),                                     # 2 cores: never more than 1
+@pytest.mark.parametrize("physical,timings,threads,tried", [
+    # (times faster than speech, first sentence in s) per thread count
+    (16, {1: (3.3, 1.5), 2: (5.1, 0.9), 4: (7.9, 0.55), 8: (9.0, 0.4)}, 4, [1, 2, 4]),   # Souko-like: both met at 4
+    (16, {1: (6.0, 0.5)}, 1, [1]),                                    # a fast computer: 1 is enough; stops there
+    (16, {1: (3.0, 1.2), 2: (6.0, 0.7), 4: (6.5, 0.65), 8: (6.6, 0.64)}, 8, [1, 2, 4, 8]),   # none starts soon enough: the soonest
+    (8, {1: (1.0, 3.0), 2: (1.9, 1.6), 4: (2.6, 1.2)}, 4, [1, 2, 4]),  # slow: the best within the cap
+    (4, {1: (5.5, 0.8), 2: (5.2, 0.8)}, 1, [1, 2]),                   # a tie on the first sentence: the faster
+    (2, {1: (2.5, 1.0)}, 1, [1]),                                     # 2 cores: never more than 1
 ])
-def test_calibration_picks_the_fewest_threads_fast_enough(tmp_path, monkeypatch, physical, speeds, threads, tried):
+def test_calibration_picks_the_fewest_threads_that_start_soon_and_keep_ahead(tmp_path, monkeypatch, physical, timings, threads, tried):
     _calibrate_env(tmp_path, monkeypatch)
     asked = []
-    cal = ra.calibrate(CONF, measure=lambda t, p, c: asked.append(t) or speeds[t], here=_machine(physical))
+    cal = ra.calibrate(CONF, measure=lambda t, p, c: asked.append(t) or timings[t], here=_machine(physical))
     assert cal["threads"] == threads and asked == tried and not cal["too_slow"]
-    assert json.loads((tmp_path / "calibration.json").read_text())["threads"] == threads
+    assert cal["first_sentence_s"] == timings[threads][1] and cal["rule"] == ra.RULE
+    saved = json.loads((tmp_path / "calibration.json").read_text())
+    assert saved["threads"] == threads and saved["first_sentence_s"] == timings[threads][1]
+    assert f"first sentence in {timings[threads][1]} s" in ra.voice_status()
 
 
 def test_a_computer_too_slow_for_the_voice_is_said_plainly(tmp_path, monkeypatch):
     logged = _calibrate_env(tmp_path, monkeypatch)
-    cal = ra.calibrate(CONF, measure=lambda t, p, c: {1: 0.6, 2: 1.1}[t], here=_machine(4))
+    cal = ra.calibrate(CONF, measure=lambda t, p, c: {1: (0.6, 4.0), 2: (1.1, 2.4)}[t], here=_machine(4))
     assert cal["threads"] == 2 and cal["too_slow"]
     assert "too slow to read without gaps" in logged[-1]
     assert ra.voice_status().startswith("This computer is too slow for the local voice to read without gaps")
 
 
-def test_the_calibration_is_redone_only_when_the_machine_changed(tmp_path, monkeypatch):
+def test_the_calibration_is_redone_when_the_machine_or_the_rule_changed(tmp_path, monkeypatch):
     _calibrate_env(tmp_path, monkeypatch)
     here = [_machine(16)]
     monkeypatch.setattr(ra, "machine", lambda conf: here[0])
     runs = []
-    measure = lambda t, p, c: runs.append(t) or 5.0
+    measure = lambda t, p, c: runs.append(t) or (6.0, 0.5)
     assert ra.calibration(CONF, measure)["threads"] == 1 and ra.calibration(CONF, measure)["threads"] == 1
     assert runs == [1]                                   # saved: not timed again
     here[0] = _machine(8, cpu="Another CPU")             # moved to another computer
     ra.calibration(CONF, measure)
     assert runs == [1, 1]
+    old = {**json.loads((tmp_path / "calibration.json").read_text()), "rule": None}   # made by 0.10.0
+    ra.write_json(ra.CALIBRATION, old)
+    ra.calibration(CONF, measure)
+    assert runs == [1, 1, 1]
 
 
 def test_many_gaps_in_a_run_give_the_next_run_one_more_step(tmp_path, monkeypatch):
