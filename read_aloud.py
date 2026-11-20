@@ -166,6 +166,15 @@ def last_reply(data):
 POST = re.compile(r"__(post_message|post_widget)$")   # what a project thread says to the person
 
 
+def is_thread(data):
+    """A claude.ai project thread: it talks to the person through its hearthbot tools."""
+    path = data.get("transcript_path")
+    if not path or not os.path.exists(path):
+        return False
+    with open(path, encoding="utf-8") as f:
+        return any("hearthbot__" in line for line in f)
+
+
 def reply_text(data):
     """What the person was told in this turn. A claude.ai project thread speaks only through
     its post_message tool (its own text is never shown), so a turn that posted nothing has
@@ -173,10 +182,10 @@ def reply_text(data):
     path = data.get("transcript_path")
     if not path or not os.path.exists(path):
         return last_reply(data)
+    if not is_thread(data):
+        return last_reply(data)
     with open(path, encoding="utf-8") as f:
         lines = f.readlines()
-    if "hearthbot__" not in "".join(lines[-400:]):
-        return last_reply(data)
     posts = []
     for line in reversed(lines):
         try:
@@ -199,7 +208,11 @@ def reply_text(data):
 
 def forward(host, data):
     """Send this reply to the workstation to be read there. Never holds Claude up: ssh runs on
-    its own and gives up after a few seconds when the workstation is off."""
+    its own and gives up after a few seconds when the workstation is off. Only replies meant for
+    the person: a claude.ai project thread, or a session typed into in a terminal; never Hisho's own
+    scripted `claude -p` runs (rating mail, writing notes) on that machine."""
+    if not is_thread(data) and os.environ.get("CLAUDE_CODE_ENTRYPOINT") != "cli":
+        return
     segs = segments(reply_text(data))
     if not segs:
         return

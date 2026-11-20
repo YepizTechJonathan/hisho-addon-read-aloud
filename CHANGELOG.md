@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.2
+
+- forward sends only replies meant for the person: a claude.ai project thread, or a session typed into in a terminal (CLAUDE_CODE_ENTRYPOINT cli). Scripted `claude -p` runs on that machine (Hisho rating mail, writing notes) are never read.
+
 ## 0.11.1
 
 - 0.11.0 without a personal name in this changelog (the Souko image takes none).

@@ -1067,6 +1067,9 @@ def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp
             pass
 
     monkeypatch.setattr(ra.subprocess, "Popen", _Ssh)
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+    ra.forward("souko", {"transcript_path": str(tmp_path / "missing.jsonl"), "last_assistant_message": '{"rating": "good"}'})
+    assert not sent                                                 # a scripted claude -p run: never read
     monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
     monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
     ra.forward("souko", _thread_turn(tmp_path, ["It is fixed."]))
