@@ -1026,3 +1026,58 @@ def test_every_pause_says_who_asked_and_an_unknown_one_is_logged(tmp_path, monke
     monkeypatch.setattr(speaker, "start", lambda: None, raising=False)
     speaker.hold()
     assert "paused by: unknown" in logged[-1]
+
+
+def _thread_turn(tmp_path, posted):
+    """A claude.ai project thread's transcript: its own text is never shown, only what it posts."""
+    post = lambda text: {"type": "tool_use", "name": "mcp__hearthbot__post_message", "input": {"text": text}}
+    lines = [{"type": "user", "message": {"content": "<wake><message id='m1'>Fix the read aloud</message></wake>"}},
+             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Old turn thinking."}, post("Old reply.")]}},
+             {"type": "user", "message": {"content": "<wake><message id='m2'>is it fixed?</message></wake>"}},
+             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Let me check the log."}]}},
+             {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+             {"type": "user", "isMeta": True, "message": {"content": "<system-reminder>say something</system-reminder>"}},
+             {"type": "assistant", "message": {"content": [post(p) for p in posted] or
+                                                [{"type": "tool_use", "name": "mcp__hearthbot__no_reply_needed", "input": {}}]}}]
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(json.dumps(l) for l in lines))
+    return {"session_id": "s1", "transcript_path": str(transcript), "cwd": "/home/u/code",
+            "last_assistant_message": "Let me check the log."}
+
+
+def test_a_project_thread_is_read_from_what_it_posted_this_turn(tmp_path):
+    assert ra.reply_text(_thread_turn(tmp_path, ["It is fixed.", "Test played."])) == "It is fixed.\n\nTest played."
+    assert ra.reply_text(_thread_turn(tmp_path, [])) == ""          # posted nothing: nothing read
+    plain = {"transcript_path": str(tmp_path / "missing.jsonl"), "last_assistant_message": "Done."}
+    assert ra.reply_text(plain) == "Done."                          # any other session: its last text
+
+
+def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp_path, monkeypatch):
+    sent = {}
+
+    class _Ssh:
+        def __init__(self, args, **kw):
+            sent["args"] = args
+            self.stdin = self
+
+        def write(self, b):
+            sent["item"] = json.loads(b)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Ssh)
+    monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    ra.forward("souko", _thread_turn(tmp_path, ["It is fixed."]))
+    assert sent["args"][-2:] == ["souko", "~/.local/bin/say-it --queue"]
+    assert sent["item"]["source"] == "Fix the read aloud" and sent["item"]["asked"] == "is it fixed?"
+    assert [s["s"] for s in sent["item"]["segments"]] == ["It is fixed."]
+
+    queued = []
+    monkeypatch.setattr(ra, "enqueue", queued.append)
+    monkeypatch.setattr(ra, "MUTE", str(tmp_path / "muted"))
+    assert ra.queue_item(sent["item"]) and queued[0]["segments"] == sent["item"]["segments"]
+    assert not ra.queue_item({"segments": "not a list"})
+    (tmp_path / "muted").touch()
+    assert not ra.queue_item(sent["item"])                          # muted on the workstation: not read

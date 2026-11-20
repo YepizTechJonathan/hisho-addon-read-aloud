@@ -2,6 +2,9 @@
 """Read Claude's replies aloud with Kokoro, one after another (Hisho add-on read-aloud).
 
   read_aloud.py hook        Stop hook: queue Claude's last reply (JSON on stdin)
+  read_aloud.py forward HOST  Stop hook on another machine (Kihon): send the reply to
+                            HOST (the workstation) over ssh, read there
+  read_aloud.py queue       queue one reply sent by forward (JSON on stdin)
   read_aloud.py say [text]  queue text (args, stdin, else selection/clipboard);
                             if something is being read, stop it instead
   read_aloud.py repeat      read the last run again from the start
@@ -158,6 +161,68 @@ def last_reply(data):
         if text:
             return text
     return ""
+
+
+POST = re.compile(r"__(post_message|post_widget)$")   # what a project thread says to the person
+
+
+def reply_text(data):
+    """What the person was told in this turn. A claude.ai project thread speaks only through
+    its post_message tool (its own text is never shown), so a turn that posted nothing has
+    nothing to read; any other session's reply is its last text."""
+    path = data.get("transcript_path")
+    if not path or not os.path.exists(path):
+        return last_reply(data)
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    if "hearthbot__" not in "".join(lines[-400:]):
+        return last_reply(data)
+    posts = []
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        content = entry.get("message", {}).get("content", "")
+        if entry.get("type") == "user" and not entry.get("isMeta") and (
+                isinstance(content, str) or not any(c.get("type") == "tool_result" for c in content)):
+            break   # the start of this turn
+        if entry.get("type") != "assistant" or isinstance(content, str):
+            continue
+        for c in reversed(content):
+            if c.get("type") == "tool_use" and POST.search(c.get("name", "")):
+                text = (c.get("input") or {}).get("text") or ""
+                if text.strip():
+                    posts.append(text)
+    return "\n\n".join(reversed(posts))
+
+
+def forward(host, data):
+    """Send this reply to the workstation to be read there. Never holds Claude up: ssh runs on
+    its own and gives up after a few seconds when the workstation is off."""
+    segs = segments(reply_text(data))
+    if not segs:
+        return
+    t = thread(data)
+    item = {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
+    proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", host,
+                             "~/.local/bin/say-it --queue"],
+                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    proc.stdin.write(json.dumps(item).encode())
+    proc.stdin.close()
+
+
+def queue_item(item):
+    """A reply sent by forward from another machine: queued like this machine's own."""
+    if os.path.exists(MUTE) or not isinstance(item, dict):
+        return False
+    segs = [s for s in item.get("segments") or [] if isinstance(s, dict) and isinstance(s.get("s"), str)]
+    if not segs:
+        return False
+    enqueue({"source": str(item.get("source") or ""), "thread": str(item.get("thread") or ""),
+             "url": str(item.get("url") or ""), "asked": str(item.get("asked") or ""), "segments": segs})
+    return True
 
 
 GENERIC_TITLE = re.compile(r"^(Remote Control session|New session|Untitled)", re.I)
@@ -1564,11 +1629,21 @@ def main():
             data = json.load(sys.stdin)
         except Exception:
             return
-        segs = segments(last_reply(data))
+        segs = segments(reply_text(data))
         if segs:
             t = thread(data)
             enqueue({"source": t["name"], "thread": t["key"], "url": t["url"],
                      "asked": asked(data), "segments": segs})
+    elif cmd == "forward":
+        try:
+            forward(sys.argv[2], json.load(sys.stdin))
+        except Exception:
+            pass   # a Stop hook never fails Claude
+    elif cmd == "queue":
+        try:
+            queue_item(json.load(sys.stdin))
+        except ValueError:
+            sys.exit("queue: JSON on stdin")
     elif cmd == "worker":
         worker()
     elif cmd == "view":

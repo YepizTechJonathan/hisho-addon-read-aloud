@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.0
+
+- Replies from Claude threads on another machine are read on the workstation. `read_aloud.py forward HOST` is a Stop hook for that machine (Kihon): it sends the reply over ssh to `say-it --queue` on HOST and never holds Claude up (gives up after 4 s when HOST is off). Since 2026-11-19 Jonathan's threads run on Kihon, which had no such hook, so Souko read nothing though nothing was muted.
+- A claude.ai project thread is read from what it posted to the person that turn (post_message / post_widget text), not its own text, which the person never sees. A turn that posted nothing reads nothing. Other sessions are read as before.
+
 ## 0.10.1
 
 - Replies start in about half a second on any computer. The calibration now keeps the fewest threads (still at most half the real cores) that make speech at least 5 times faster than it plays and a typical first sentence (about 15 words) in 0.6 s or less; when none does both, the one that starts soonest. 0.10.0 kept the fewest 3 times faster, which on Souko was 1 thread and a first sentence after about 1.5 s. The first-sentence time is kept in calibration.json and shown in Status. A calibration made by an older rule is redone (calibration.json `rule`).

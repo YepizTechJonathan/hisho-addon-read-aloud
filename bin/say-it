@@ -15,6 +15,7 @@
 #   say-it --test      read a test sentence
 #   say-it --status    muted / reading / installed / audio output, as JSON
 #   say-it --view      the reader itself (runs inside that window)
+#   say-it --queue     queue a reply sent from another machine (read_aloud.py forward, JSON on stdin)
 # Running plain say-it while it's speaking stops the speech.
 S="$(dirname "$(readlink -f "$0")")/../read_aloud.py"
 
@@ -46,5 +47,6 @@ case "$1" in
   --test)    exec python3 "$S" test ;;
   --status)  exec python3 "$S" status ;;
   --view)    exec python3 "$S" view ;;
+  --queue)   exec python3 "$S" queue ;;
   *)         exec python3 "$S" say "$@" ;;
 esac

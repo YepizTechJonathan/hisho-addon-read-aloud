@@ -77,6 +77,19 @@ model (sha256-checked) are downloaded on install into `~/.local/share/hisho/read
 
 Once installed, every Claude Code reply is read aloud. Keys (Hyprland): Super+Alt+T reads the highlighted text, R repeats, X stops, M mutes, V shows or hides the reader window, O opens the thread, P pauses. Its page (**Add-ons > Read aloud**) sets the voice, speed, opacity and keys.
 
+### Replies from Claude on another machine
+
+Claude threads that run on another machine (Kihon) are read on the workstation too. On that machine, add this
+Stop hook to `~/.claude/settings.json` (the folder is wherever this repository is checked out there):
+
+```json
+{"type": "command", "command": "python3 ~/code/addons/hisho-addon-read-aloud/read_aloud.py forward souko", "timeout": 10}
+```
+
+It sends each reply over ssh (that machine must reach the workstation with a key) and returns at once; when the
+workstation is off the reply is dropped after a few seconds. A claude.ai project thread is read from what it posted
+to you that turn (its post_message text), so a turn that posted nothing is silent.
+
 ## Settings
 
 On its page or in `~/Hisho/System/Config/Addons/read-aloud.yaml`: the Kokoro voice, speed, the
