@@ -1084,3 +1084,12 @@ def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp
     assert not ra.queue_item({"segments": "not a list"})
     (tmp_path / "muted").touch()
     assert not ra.queue_item(sent["item"])                          # muted on the workstation: not read
+
+
+def test_a_thread_on_a_machine_without_the_desktop_app_still_opens_on_claude_ai(tmp_path, monkeypatch):
+    monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    monkeypatch.setattr(ra, "CLI_SESSIONS", str(tmp_path / "sessions"))
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "579.json").write_text(json.dumps({"sessionId": "s1", "bridgeSessionId": "session_01K"}))
+    assert ra.thread(_thread_turn(tmp_path, ["Done."]))["url"] == "https://claude.ai/code/session_01K"

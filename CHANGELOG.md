@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.3
+
+- A thread forwarded from a machine without the Claude desktop app (Kihon) opens on claude.ai again with Super+Alt+O / a click in the reader: its link comes from the running Claude Code's `~/.claude/sessions/<pid>.json` (bridgeSessionId).
+
 ## 0.11.2
 
 - forward sends only replies meant for the person: a claude.ai project thread, or a session typed into in a terminal (CLAUDE_CODE_ENTRYPOINT cli). Scripted `claude -p` runs on that machine (Hisho rating mail, writing notes) are never read.

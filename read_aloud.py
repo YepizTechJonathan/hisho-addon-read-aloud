@@ -47,6 +47,7 @@ OPACITY = os.path.join(STATE, "opacity")      # the slider's last value
 PY = os.path.join(DATA, "venv", "bin", "python")
 MODELS = os.path.join(DATA, "models")
 DESKTOP_SESSIONS = os.path.expanduser("~/.config/Claude/claude-code-sessions")
+CLI_SESSIONS = os.path.expanduser("~/.claude/sessions")   # a running Claude Code: its claude.ai session (bridgeSessionId)
 RATE = 24000
 DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
@@ -356,6 +357,12 @@ def thread(data):
     name = title or os.path.basename(record.get("cwd") or data.get("cwd") or "") or "Claude"
     remote = ((record.get("remoteControlSpawn") or {}).get("ccrSessionId")
               or next(iter(record.get("bridgeSessionIds") or []), ""))
+    if not remote and sid:   # no desktop app here (Kihon): the running Claude Code says its claude.ai session
+        for path in glob.glob(f"{CLI_SESSIONS}/*.json"):
+            d = read_json(path) or {}
+            if d.get("sessionId") == sid and d.get("bridgeSessionId"):
+                remote = d["bridgeSessionId"]
+                break
     url = ""
     if remote.startswith("cse_"):
         url = "https://claude.ai/code/session_" + remote[4:]
