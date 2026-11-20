@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.11.1
+
+- 0.11.0 without a personal name in this changelog (the Souko image takes none).
+
 ## 0.11.0
 
-- Replies from Claude threads on another machine are read on the workstation. `read_aloud.py forward HOST` is a Stop hook for that machine (Kihon): it sends the reply over ssh to `say-it --queue` on HOST and never holds Claude up (gives up after 4 s when HOST is off). Since 2026-11-19 Jonathan's threads run on Kihon, which had no such hook, so Souko read nothing though nothing was muted.
+- Replies from Claude threads on another machine are read on the workstation. `read_aloud.py forward HOST` is a Stop hook for that machine (Kihon): it sends the reply over ssh to `say-it --queue` on HOST and never holds Claude up (gives up after 4 s when HOST is off). Threads that ran on Kihon had no such hook, so Souko read nothing from them though nothing was muted.
 - A claude.ai project thread is read from what it posted to the person that turn (post_message / post_widget text), not its own text, which the person never sees. A turn that posted nothing reads nothing. Other sessions are read as before.
 
 ## 0.10.1
