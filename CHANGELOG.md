@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.4
+
+- A project thread's post that was refused (and then sent again) is no longer read twice: posts whose tool call failed are skipped.
+- New `output` setting (Speaker): a PipeWire output to always read on while it works, e.g. `dante_tx`, so an app that makes itself the default output (a game stream's virtual speaker) no longer takes the voice.
+
 ## 0.11.3
 
 - A thread forwarded from a machine without the Claude desktop app (Kihon) opens on claude.ai again with Super+Alt+O / a click in the reader: its link comes from the running Claude Code's `~/.claude/sessions/<pid>.json` (bridgeSessionId).

@@ -676,6 +676,16 @@ def test_a_broken_default_output_falls_back_to_a_headset_before_hdmi():
     assert ra.pick_output([], avoid={"default"}) == (None, "none")         # ... once, not after a stall
 
 
+def test_the_output_setting_keeps_the_voice_when_a_stream_takes_the_default():
+    outputs = _with(SINKS(SAMPLE), DANTE, state="suspended", error="", default=False)
+    outputs = _with(outputs, HDMI, default=True)                           # a game stream's speaker
+    assert ra.pick_output(outputs, preferred=DANTE) == (outputs[0], "the output setting")
+    assert ra.pick_output(outputs, preferred=HDMI) == (None, "default")    # already the default
+    assert ra.pick_output(outputs, avoid={DANTE}, preferred=DANTE) == (None, "default")
+    assert ra.pick_output(SINKS(SAMPLE), preferred=DANTE)[0]["name"] == ARCTIS   # broken: fall back
+    assert ra.pick_output(outputs, preferred="gone") == (None, "default")
+
+
 def test_with_no_working_output_there_is_nothing_to_play_on():
     outputs = [{**s, "state": "error"} for s in SINKS(SAMPLE)]
     assert ra.pick_output(outputs) == (None, "none")
@@ -1050,6 +1060,18 @@ def test_a_project_thread_is_read_from_what_it_posted_this_turn(tmp_path):
     assert ra.reply_text(_thread_turn(tmp_path, [])) == ""          # posted nothing: nothing read
     plain = {"transcript_path": str(tmp_path / "missing.jsonl"), "last_assistant_message": "Done."}
     assert ra.reply_text(plain) == "Done."                          # any other session: its last text
+
+
+def test_a_refused_post_that_was_sent_again_is_read_once(tmp_path):
+    data = _thread_turn(tmp_path, [])
+    post = lambda i: {"type": "tool_use", "id": i, "name": "mcp__hearthbot__post_message", "input": {"text": "The plan is ready."}}
+    with open(data["transcript_path"], "a") as f:
+        for line in ({"type": "assistant", "message": {"content": [post("a")]}},
+                     {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a", "is_error": True}]}},
+                     {"type": "assistant", "message": {"content": [post("b")]}},
+                     {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b"}]}}):
+            f.write("\n" + json.dumps(line))
+    assert ra.reply_text(data) == "The plan is ready."
 
 
 def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp_path, monkeypatch):

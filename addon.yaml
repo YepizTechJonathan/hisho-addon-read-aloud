@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.11.3
+version: 0.11.4
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -27,6 +27,7 @@ options:
   announce_thread: true            # say "From: <thread>." when the voice moves to another thread
   auto_pause: true                 # opening the thread pauses reading; the pause key resumes
   title_size: 2                    # thread name in the reader, times normal (1-4; needs kitty, else 1)
+  output: ""                       # PipeWire node.name to always read on when it works (e.g. dante_tx); "" follows the default output
   fallback_output: ""              # PipeWire node.name to read on when the default output is broken; "" picks one (a headset before HDMI)
   cpu_threads: auto                # processor cores for the voice; auto measures this computer, a number overrides
   use_gpu: auto                    # auto: a GPU when onnxruntime-gpu is installed, else the CPU; no: always the CPU
@@ -49,6 +50,7 @@ schema:
   announce_thread: bool
   auto_pause: bool
   title_size: int
+  output: str?
   fallback_output: str?
   cpu_threads: str                 # auto or a number
   use_gpu: str                     # auto or no
@@ -141,6 +143,9 @@ help:
   title_size:
     label: Thread name size
     say: "How big the thread's name is in the reader window, from 1 (normal) to 4. Needs the kitty terminal; without it, 1."
+  output:
+    label: Speaker (optional)
+    say: "Always read on this output when it works: a PipeWire output name, such as dante_tx. Leave empty to follow the computer's default output. Set it when another app (a game stream) makes itself the default."
   fallback_output:
     label: Backup speaker (optional)
     say: "Where to play when the usual speaker is broken: a PipeWire output name. Leave empty and it picks one itself (a headset before a TV)."

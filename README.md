@@ -44,6 +44,7 @@ in `~/.local/state/hisho/read-aloud/read-aloud.log` ("voice behind").
   - `announce_thread` (bool, default `True`)
   - `auto_pause` (bool, default `True`)
   - `title_size` (int, default `2`)
+  - `output` (str, optional)
   - `fallback_output` (str, optional)
   - `cpu_threads` (str, default `auto`)
   - `use_gpu` (str, default `auto`)
@@ -93,7 +94,8 @@ to you that turn (its post_message text), so a turn that posted nothing is silen
 ## Settings
 
 On its page or in `~/Hisho/System/Config/Addons/read-aloud.yaml`: the Kokoro voice, speed, the
-reader's opacity, whether the reader opens by itself, whether the thread is announced, the output to read on
+reader's opacity, whether the reader opens by itself, whether the thread is announced, the output to always read on
+(`output`, such as `dante_tx`, so a game stream that makes itself the default doesn't take the voice), the output to read on
 when the default one is broken (`fallback_output`, a PipeWire node name such as
 `alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo` from `wpctl status` /
 `pw-dump`; empty picks one), the voice's cores (`cpu_threads`: `auto` measures, a number overrides),

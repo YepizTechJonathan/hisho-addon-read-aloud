@@ -53,7 +53,7 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
-            "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
+            "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
@@ -188,6 +188,7 @@ def reply_text(data):
     with open(path, encoding="utf-8") as f:
         lines = f.readlines()
     posts = []
+    failed = set()   # posts the person never saw (refused, then usually sent again)
     for line in reversed(lines):
         try:
             entry = json.loads(line)
@@ -197,10 +198,15 @@ def reply_text(data):
         if entry.get("type") == "user" and not entry.get("isMeta") and (
                 isinstance(content, str) or not any(c.get("type") == "tool_result" for c in content)):
             break   # the start of this turn
+        if entry.get("type") == "user":
+            if isinstance(content, list):
+                failed.update(c.get("tool_use_id") for c in content
+                              if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"))
+            continue
         if entry.get("type") != "assistant" or isinstance(content, str):
             continue
         for c in reversed(content):
-            if c.get("type") == "tool_use" and POST.search(c.get("name", "")):
+            if c.get("type") == "tool_use" and POST.search(c.get("name", "")) and c.get("id") not in failed:
                 text = (c.get("input") or {}).get("text") or ""
                 if text.strip():
                     posts.append(text)
@@ -480,8 +486,10 @@ def healthy(sink):
     return sink["state"] not in ("error", "")
 
 
-def pick_output(outputs, fallback="", avoid=()):
-    """Where to play: (sink or None, why). The default output while it works (None: pw-cat
+def pick_output(outputs, fallback="", avoid=(), preferred=""):
+    """Where to play: (sink or None, why). The output setting (preferred) whenever it is there
+    and works, so an app that makes itself the default (a game stream's virtual speaker) does not
+    take the voice away. Else the default output while it works (None: pw-cat
     follows the default); when it is in error, missing or stalled (avoid), the fallback_output
     setting if that works, else the first working output, a USB or Bluetooth headset before
     HDMI. (None, why) with why "none" when nothing works. With no outputs to see (pw-dump missing
@@ -489,6 +497,9 @@ def pick_output(outputs, fallback="", avoid=()):
     there is nothing known to work, and trying the default again would loop forever."""
     if not outputs:
         return (None, "none") if avoid else (None, "default")
+    mine = next((s for s in outputs if preferred and s["name"] == preferred), None)
+    if mine and healthy(mine) and mine["name"] not in avoid:
+        return (None, "default") if mine["default"] else (mine, "the output setting")
     default = next((s for s in outputs if s["default"]), None)
     if default and healthy(default) and default["name"] not in avoid:
         return None, "default"
@@ -539,10 +550,11 @@ class Speaker:
     """The audio player, and the sentence it was last given, so a pause can silence it at
     once and Resume can start that sentence again from its beginning."""
 
-    def __init__(self, fallback=""):
+    def __init__(self, fallback="", preferred=""):
         self.proc, self.until, self.last = None, time.monotonic(), None
         self.skipping = False   # set by Skip: drop the rest of the reply being read
         self.fallback = fallback   # the fallback_output setting (node.name), "" = pick one
+        self.preferred = preferred   # the output setting (node.name), "" = the default output
         self.avoid = set()         # outputs that took no audio this run
         self.told = False          # the fallback is notified once per run
         self.output = None         # the sink played on, None = the default output
@@ -551,13 +563,15 @@ class Speaker:
     def choose(self):
         """Pick the output, log it when it isn't the default, tell once per run."""
         outputs = sinks()
-        self.output, why = pick_output(outputs, self.fallback, self.avoid)
+        self.output, why = pick_output(outputs, self.fallback, self.avoid, self.preferred)
         if why == "none":
             found = ", ".join(f"{s['label']} {s['error'] or s['state']}" for s in outputs)
             log(f"no working audio output ({found or 'PipeWire lists no outputs or does not answer'})")
             notify("No working audio output")
             raise NoOutput()
-        if self.output:
+        if self.output and why == "the output setting":
+            log(f"reading on {self.output['label']} ({self.output['name']}): {why}")
+        elif self.output:
             log(f"reading on {self.output['label']} ({self.output['name']}): {why}")
             if not self.told:
                 self.told = True
@@ -1003,7 +1017,7 @@ def worker():
 
     open(RUN, "w").close()  # a new run starts (what waits joins it if nothing can play)
     try:
-        speaker = Speaker(conf.get("fallback_output") or "")
+        speaker = Speaker(conf.get("fallback_output") or "", conf.get("output") or "")
     except NoOutput:
         return no_output()
     signal.signal(signal.SIGUSR1, lambda *_: speaker.cut())   # pause: silence at once
@@ -1629,7 +1643,7 @@ def status(outputs=None):
     reading = bool(read_json(NOW))
     playing = (read_json(os.path.join(STATE, "output.json")) or {}) if reading and worker_pid() else {}
     if not playing:
-        sink, why = pick_output(outputs, settings().get("fallback_output") or "")
+        sink, why = pick_output(outputs, settings().get("fallback_output") or "", (), settings().get("output") or "")
         default = next((s["label"] for s in outputs if s["default"]), "default")
         playing = {"output": sink["label"] if sink else (default if why != "none" else "none"), "why": why}
     return {"muted": os.path.exists(MUTE), "reading": reading, "waiting": len(queued()), "opacity": opacity(),
