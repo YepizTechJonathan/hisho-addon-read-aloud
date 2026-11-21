@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.11.4
+version: 0.11.5
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -133,7 +133,7 @@ help:
     say: "How solid the reader window is: 100 is solid, lower lets you see through it. The slider in the window changes it too."
   auto_open:
     label: Open the reader window by itself
-    say: "On: the reader window opens when reading starts and closes when it ends. Off: open it with its key."
+    say: "On: the reader window opens when reading starts and closes when it ends, except while a fullscreen game has focus. Off: open it with its key."
   announce_thread:
     label: Say which thread is read
     say: "On: it says \"From:\" and the thread's name when it moves to a reply from another thread."

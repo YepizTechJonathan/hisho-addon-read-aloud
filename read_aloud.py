@@ -1067,7 +1067,7 @@ def worker():
             speaker.start()
 
     if conf["auto_open"]:
-        reader = subprocess.Popen(["python3", os.path.abspath(__file__), "open"],
+        reader = subprocess.Popen(["python3", os.path.abspath(__file__), "open", "--auto"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         threading.Thread(target=reader.wait, daemon=True).start()   # reaped: no <defunct> left
     number, gaps = 0, []
@@ -1143,10 +1143,23 @@ def clients():
         return []
 
 
-def open_reader():
+def fullscreen_focused():
+    """True while the focused window is fullscreen (a game): the reader would
+    take the mouse from it, so reading starts without opening it."""
+    try:
+        return bool(json.loads(hypr("activewindow", "-j") or "{}").get("fullscreen"))
+    except Exception:
+        return False
+
+
+def open_reader(auto=False):
     """Open the reader window (or bring it forward) where it was last left;
-    the first time, at the bottom right of the Claude app."""
+    the first time, at the bottom right of the Claude app. Opened by itself
+    (auto), it stays closed while a fullscreen window has focus."""
     if not has_hyprland():
+        return
+    if auto and fullscreen_focused():
+        log("reader window not opened: a fullscreen window has focus")
         return
     pos = read_json(READER_POS)
     win = next((c for c in clients() if c["class"] == READER), None)
@@ -1683,7 +1696,7 @@ def main():
     elif cmd == "view":
         view()
     elif cmd == "open":
-        open_reader()
+        open_reader(auto="--auto" in sys.argv[2:])
     elif cmd == "open-thread":
         open_thread(" ".join(sys.argv[2:]) or None)
     elif cmd == "thread-window":

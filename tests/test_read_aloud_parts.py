@@ -1115,3 +1115,18 @@ def test_a_thread_on_a_machine_without_the_desktop_app_still_opens_on_claude_ai(
     (tmp_path / "sessions").mkdir()
     (tmp_path / "sessions" / "579.json").write_text(json.dumps({"sessionId": "s1", "bridgeSessionId": "session_01K"}))
     assert ra.thread(_thread_turn(tmp_path, ["Done."]))["url"] == "https://claude.ai/code/session_01K"
+
+
+def test_the_reader_does_not_open_by_itself_over_a_fullscreen_game(monkeypatch):
+    monkeypatch.setattr(ra, "has_hyprland", lambda: True)
+    monkeypatch.setattr(ra, "log", lambda *a: None)
+    looked = []
+    monkeypatch.setattr(ra, "clients", lambda: looked.append(1) or [])
+    monkeypatch.setattr(ra.subprocess, "Popen", lambda *a, **k: pytest.fail("reader launched over a game"))
+    monkeypatch.setattr(ra, "hypr", lambda *a: json.dumps({"class": "steam_app_1", "fullscreen": 2}))
+    ra.open_reader(auto=True)
+    assert not looked
+    monkeypatch.setattr(ra, "hypr", lambda *a: json.dumps({"class": "kitty", "fullscreen": 0}))
+    assert not ra.fullscreen_focused()
+    monkeypatch.setattr(ra, "hypr", lambda *a: "")
+    assert not ra.fullscreen_focused()

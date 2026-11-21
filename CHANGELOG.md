@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.5
+
+- The reader window no longer opens by itself while a fullscreen window (a game) has focus, so it can't take the mouse from the game. The voice still reads; open the window with its key.
+
 ## 0.11.4
 
 - A project thread's post that was refused (and then sent again) is no longer read twice: posts whose tool call failed are skipped.
