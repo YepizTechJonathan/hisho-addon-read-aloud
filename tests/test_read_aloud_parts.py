@@ -1074,6 +1074,18 @@ def test_a_refused_post_that_was_sent_again_is_read_once(tmp_path):
     assert ra.reply_text(data) == "The plan is ready."
 
 
+def test_a_channel_thread_is_read_from_what_it_posted_to_the_channel(tmp_path):
+    data = _thread_turn(tmp_path, [])
+    send = lambda msg, **kw: {"type": "tool_use", "name": "mcp__claude-code-remote__send_message",
+                              "input": {"session_id": "@parent", "message": msg, **kw}}
+    with open(data["transcript_path"], "a") as f:
+        f.write("\n" + json.dumps({"type": "assistant", "message": {"content": [
+            send("Batch\n\u2731 step", visibility="posted_to_shared_channel", live_status="update"),
+            send("Note for the coordinator.", visibility="sent_to_shared_agent"),
+            send("PR 73 is ready.", visibility="posted_to_shared_channel")]}}))
+    assert ra.reply_text(data) == "PR 73 is ready."
+
+
 def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp_path, monkeypatch):
     sent = {}
 

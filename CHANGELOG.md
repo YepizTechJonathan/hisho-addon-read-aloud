@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.6
+
+- Threads that speak through send_message to a shared channel (posted_to_shared_channel) are read too; messages only for the coordinator and progress checklists are not.
+
 ## 0.11.5
 
 - The reader window no longer opens by itself while a fullscreen window (a game) has focus, so it can't take the mouse from the game. The voice still reads; open the window with its key.

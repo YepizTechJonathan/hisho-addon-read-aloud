@@ -164,7 +164,19 @@ def last_reply(data):
     return ""
 
 
-POST = re.compile(r"__(post_message|post_widget)$")   # what a project thread says to the person
+POST = re.compile(r"__(post_message|post_widget|send_message)$")   # what a project thread says to the person
+
+
+def said(call):
+    """What a thread's tool call says to the person, or "". A channel's thread speaks through
+    send_message posted to the shared channel; a message only for the coordinator, or a
+    progress checklist (live_status), is not read."""
+    args = call.get("input") or {}
+    if call.get("name", "").endswith("__send_message"):
+        if args.get("visibility") != "posted_to_shared_channel" or args.get("live_status"):
+            return ""
+        return args.get("message") or ""
+    return args.get("text") or ""
 
 
 def is_thread(data):
@@ -173,7 +185,7 @@ def is_thread(data):
     if not path or not os.path.exists(path):
         return False
     with open(path, encoding="utf-8") as f:
-        return any("hearthbot__" in line for line in f)
+        return any("hearthbot__" in line or '"posted_to_shared_channel"' in line for line in f)
 
 
 def reply_text(data):
@@ -207,7 +219,7 @@ def reply_text(data):
             continue
         for c in reversed(content):
             if c.get("type") == "tool_use" and POST.search(c.get("name", "")) and c.get("id") not in failed:
-                text = (c.get("input") or {}).get("text") or ""
+                text = said(c)
                 if text.strip():
                     posts.append(text)
     return "\n\n".join(reversed(posts))
