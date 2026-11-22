@@ -226,7 +226,8 @@ def reply_text(data):
 
 
 def forward(host, data):
-    """Send this reply to the workstation to be read there. Never holds Claude up: ssh runs on
+    """Send this reply to the workstation to be read there (host: one or more, comma-separated;
+    "ha" = Home Assistant's read aloud speaker through `hisho home-assistant say`). Never holds Claude up: ssh runs on
     its own and gives up after a few seconds when the workstation is off. Only replies meant for
     the person: a claude.ai project thread, or a session typed into in a terminal; never Hisho's own
     scripted `claude -p` runs (rating mail, writing notes) on that machine."""
@@ -237,12 +238,17 @@ def forward(host, data):
         return
     t = thread(data)
     item = {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
-    proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", host,
-                             "~/.local/bin/say-it --queue"],
-                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            start_new_session=True)
-    proc.stdin.write(json.dumps(item).encode())
-    proc.stdin.close()
+    for target in host.split(","):
+        if target == "ha":
+            # Home Assistant's read aloud speaker (the Hisho integration's options; refused there while off)
+            args, body = ["hisho", "home-assistant", "say"], " ".join(s["s"] for s in segs)
+        else:
+            args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", target, "~/.local/bin/say-it --queue"]
+            body = json.dumps(item)
+        proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        proc.stdin.write(body.encode())
+        proc.stdin.close()
 
 
 def queue_item(item):

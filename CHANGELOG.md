@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- forward takes several targets (comma-separated), and `ha` reads the reply on Home Assistant's read aloud speaker through `hisho home-assistant say` (the Hisho integration's Read aloud option, v1.21.0+).
+
 ## 0.11.6
 
 - Threads that speak through send_message to a shared channel (posted_to_shared_channel) are read too; messages only for the coordinator and progress checklists are not.

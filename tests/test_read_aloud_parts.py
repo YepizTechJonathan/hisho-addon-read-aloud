@@ -1074,6 +1074,28 @@ def test_a_refused_post_that_was_sent_again_is_read_once(tmp_path):
     assert ra.reply_text(data) == "The plan is ready."
 
 
+def test_forward_to_ha_says_the_reply_through_hisho(tmp_path, monkeypatch):
+    calls = []
+
+    class _Proc:
+        def __init__(self, args, **kw):
+            self.args, self.stdin, self.sent = args, self, b""
+            calls.append(self)
+
+        def write(self, b):
+            self.sent += b
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    ra.forward("souko,ha", _thread_turn(tmp_path, ["It is fixed."]))
+    assert [c.args[-1] for c in calls] == ["~/.local/bin/say-it --queue", "say"]
+    assert calls[1].args == ["hisho", "home-assistant", "say"] and calls[1].sent == b"It is fixed."
+
+
 def test_a_channel_thread_is_read_from_what_it_posted_to_the_channel(tmp_path):
     data = _thread_turn(tmp_path, [])
     send = lambda msg, **kw: {"type": "tool_use", "name": "mcp__claude-code-remote__send_message",
