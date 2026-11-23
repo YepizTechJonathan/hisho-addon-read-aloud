@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1
+
+- Each sentence sent to Home Assistant says whether the reply goes on (`--more`), so a short reply's start waits for the rest and plays as one clip instead of pausing after the first sentence (needs the Hisho integration v1.26.2+ and Hisho's `say --more`).
+
 ## 0.14.0
 
 - On Home Assistant up to 8 sentences are queued ahead of the one playing, in order, so their speech is made while it plays and the integration (v1.25.0+) joins them into one continuous clip: no pause between sentences.

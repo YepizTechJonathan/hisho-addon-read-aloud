@@ -1305,16 +1305,16 @@ def test_sentences_are_queued_ahead_in_order_and_dropped_by_a_cut(tmp_path, monk
     monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
     speaker = ra.HASpeaker("kihon:ha")
     sent = []
-    speaker.queue_ahead = lambda text, ident: sent.append((speaker.round, text, ident))
+    speaker.queue_ahead = lambda text, ident, more=False: sent.append((speaker.round, text, ident, more))
     speaker.upcoming = ["Two.", "Three."]
     speaker.play({"current": 0}, "One.")
-    assert [t for _, t, _ in sent] == ["One.", "Two.", "Three."]   # this one first, then the ones behind it
+    assert [(t, m) for _, t, _, m in sent] == [("One.", True), ("Two.", True), ("Three.", False)]   # in order
     speaker.upcoming = ["Three.", "Four."]
     speaker.play({"current": 1}, "Two.")
-    assert [t for _, t, _ in sent] == ["One.", "Two.", "Three.", "Four."]   # Two. and Three. already sent
+    assert [t for _, t, _, _ in sent] == ["One.", "Two.", "Three.", "Four."]   # Two. and Three. already sent
     assert speaker.ahead == [["Three.", sent[2][2]], ["Four.", sent[3][2]]]
     speaker.cut()                                    # a pause or skip: Home Assistant drops what waits there
     assert speaker.ahead == [] and speaker.round == 1
     speaker.upcoming = []
     speaker.play({"current": 2}, "Three.")
-    assert sent[-1][:2] == (1, "Three.") and sent[-1][2] != sent[2][2]   # sent again under a new id
+    assert sent[-1][:2] == (1, "Three.") and sent[-1][2] != sent[2][2] and not sent[-1][3]   # sent again under a new id

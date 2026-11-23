@@ -828,8 +828,9 @@ class HASpeaker:
         self.skipping = False
         self.upcoming = []   # the sentences after this one, set by read(): sent ahead so Home Assistant makes
                              # their speech while this one plays and joins them on without a gap
+        self.ends = True     # upcoming reaches the reply's last sentence
         self.ahead = []      # [text, id] sent ahead (or on their way), in order
-        self.sending = queue.Queue()   # (round, text, id) for the sender, which hands them over one at a time
+        self.sending = queue.Queue()   # (round, text, id, more) for the sender, which hands them over one at a time
         self.round = 0       # a cut starts a new round: what the last one still had to send is dropped
         threading.Thread(target=self.sender, daemon=True).start()
 
@@ -847,20 +848,22 @@ class HASpeaker:
     def sender(self):
         """Queue sentences ahead in Home Assistant, one call after the other so they arrive in order."""
         while True:
-            turn, text, ident = self.sending.get()
+            turn, text, ident, more = self.sending.get()
             for _ in range(HA_RETRY // 3):
                 if turn != self.round:
                     break
                 try:
-                    if subprocess.run(ha_say(self.target, "--id", ident), input=text.encode(), timeout=30,
+                    if subprocess.run(ha_say(self.target, "--id", ident, *(["--more"] if more else [])),
+                                      input=text.encode(), timeout=30,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
                         break
                 except (OSError, subprocess.TimeoutExpired):
                     pass
                 time.sleep(3)
 
-    def queue_ahead(self, text, ident):
-        self.sending.put((self.round, text, ident))
+    def queue_ahead(self, text, ident, more=False):
+        """more: the reply goes on after this sentence, so Home Assistant waits a moment to start it with the rest."""
+        self.sending.put((self.round, text, ident, more))
 
     def start(self):
         pass
@@ -911,11 +914,11 @@ class HASpeaker:
             ident = self.ahead.pop(0)[1]
         else:       # not sent ahead: it goes first, through the sender, so the ones behind can't overtake it
             self.ahead, ident = [], os.urandom(6).hex()
-            self.queue_ahead(text, ident)
+            self.queue_ahead(text, ident, bool(self.upcoming))
         if not again:   # queued behind this one in Home Assistant: their speech is made while it plays
-            for nxt in self.upcoming[len(self.ahead):]:
-                self.ahead.append([nxt, os.urandom(6).hex()])
-                self.queue_ahead(*self.ahead[-1])
+            for k in range(len(self.ahead), len(self.upcoming)):
+                self.ahead.append([self.upcoming[k], os.urandom(6).hex()])
+                self.queue_ahead(*self.ahead[-1], not (self.ends and k == len(self.upcoming) - 1))
         self.proc = self.send(text, ident)   # already queued there: answers once it has been spoken
         # the highlight moves when the speaker starts this sentence, not when it is sent
         started = subprocess.Popen(ha_say(self.target, "--await-start", ident), stdin=subprocess.DEVNULL,
@@ -1291,6 +1294,7 @@ def worker():
                         f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
                 if on_ha:
                     speaker.upcoming = [seg["s"] for seg in segs[i + 1:i + 1 + HA_AHEAD]]
+                    speaker.ends = i + 1 + HA_AHEAD >= len(segs)
                 speaker.play(status, pcm)
         finally:
             done.set()
