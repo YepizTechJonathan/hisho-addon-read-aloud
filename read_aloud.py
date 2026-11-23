@@ -55,7 +55,8 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
             "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
-HA_TARGET = os.path.join(STATE, "ha-target")   # forward's last Home Assistant target: repeat asks it
+HA_TARGET = os.path.join(STATE, "ha-target")
+LIVE = os.path.join(STATE, "live")   # one file per session whose posts are read as they are posted   # forward's last Home Assistant target: repeat asks it
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
 CALIBRATION = os.path.join(STATE, "calibration.json")   # how many cores the voice needs here, measured
@@ -235,11 +236,41 @@ def forward(host, data):
     scripted `claude -p` runs (rating mail, writing notes) on that machine."""
     if not is_thread(data) and os.environ.get("CLAUDE_CODE_ENTRYPOINT") != "cli":
         return
-    segs = segments(reply_text(data))
-    if not segs:
+    if read_live(data):
         return
+    segs = segments(reply_text(data))
+    if segs:
+        t = thread(data)
+        send(host, {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs})
+
+
+def read_live(data):
+    """A thread whose posts are read the moment they are posted (the PostToolUse hook): its Stop hook
+    has nothing left to read."""
+    sid = str(data.get("session_id") or "")
+    return bool(sid) and os.path.exists(os.path.join(LIVE, sid))
+
+
+def post_item(data):
+    """A PostToolUse hook's post to the person (post_message, post_widget, a channel's send_message) as a
+    reply to read now, instead of when the thread's turn ends; None for any other tool call."""
+    name = str(data.get("tool_name") or "")
+    if not POST.search(name):
+        return None
+    segs = segments(said({"name": name, "input": data.get("tool_input") or {}}))
+    sid = str(data.get("session_id") or "")
+    if sid:
+        os.makedirs(LIVE, exist_ok=True)
+        open(os.path.join(LIVE, sid), "w").close()
+    if not segs:
+        return None
     t = thread(data)
-    item = {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
+    return {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
+
+
+def send(host, item):
+    """Hand a reply to its readers (see forward)."""
+    segs = item["segments"]
     for target in host.split(","):
         if target == "ha" or target.endswith(":ha"):
             # Home Assistant's read aloud speaker (the Hisho integration's options; refused there while off);
@@ -1803,12 +1834,23 @@ def status(outputs=None):
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "say"
-    if cmd == "hook":
+    if cmd in ("post", "forward-post"):   # PostToolUse: read a post the moment it is made
+        try:
+            item = post_item(json.load(sys.stdin))
+            if item and cmd == "forward-post":
+                send(sys.argv[2], item)
+            elif item and not os.path.exists(MUTE):
+                enqueue(item)
+        except Exception:
+            pass   # a hook never fails Claude
+    elif cmd == "hook":
         if os.path.exists(MUTE):
             return
         try:
             data = json.load(sys.stdin)
         except Exception:
+            return
+        if read_live(data):
             return
         segs = segments(reply_text(data))
         if segs:

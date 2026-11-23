@@ -83,12 +83,23 @@ for g in data.setdefault("hooks", {}).get("Stop", []):
         groups.append(g)
 groups.append({"hooks": [{"type": "command", "command": command, "timeout": 10}]})
 data["hooks"]["Stop"] = groups
+# PostToolUse: a thread's message to the person is read the moment it is posted, not when its turn ends
+posts = "mcp__hearthbot__post_message|mcp__hearthbot__post_widget|mcp__claude-code-remote__send_message"
+live = f"python3 {addon}/read_aloud.py post"
+groups = []
+for g in data["hooks"].get("PostToolUse", []):
+    g = {**g, "hooks": [h for h in g.get("hooks", []) if "read_aloud.py post" not in h.get("command", "")]}
+    if g["hooks"]:
+        groups.append(g)
+groups.append({"matcher": posts, "hooks": [{"type": "command", "command": live, "timeout": 10}]})
+data["hooks"]["PostToolUse"] = groups
 tmp = path + ".tmp"
 os.makedirs(os.path.dirname(path), exist_ok=True)   # a new machine: Claude Code comes later, the hook waits for it
 json.dump(data, open(tmp, "w"), indent=2)
 open(tmp, "a").write("\n")
 os.replace(tmp, path)
 print("Stop hook:", command)
+print("PostToolUse hook:", live)
 EOF
 
 echo "== Voice speed on this computer (silent)"

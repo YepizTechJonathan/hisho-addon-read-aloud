@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- A thread's message is read the moment it is posted (PostToolUse hook: `post` here, `forward-post HOSTS` on another machine), not when the thread's turn ends; the Stop hook then leaves that thread alone. The installer adds the hook.
+
 ## 0.12.2
 
 - Repeat (Super+Alt+R) works when replies are read on Home Assistant: forward remembers its HA target and repeat asks it to read the last reply again.

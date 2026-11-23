@@ -84,12 +84,23 @@ Claude threads that run on another machine (Kihon) are read on the workstation t
 Stop hook to `~/.claude/settings.json` (the folder is wherever this repository is checked out there):
 
 ```json
-{"type": "command", "command": "python3 ~/code/addons/hisho-addon-read-aloud/read_aloud.py forward souko", "timeout": 10}
+{"type": "command", "command": "python3 ~/code/addons/hisho-addon-read-aloud/read_aloud.py forward main|souko", "timeout": 10}
 ```
 
-It sends each reply over ssh (that machine must reach the workstation with a key) and returns at once; when the
-workstation is off the reply is dropped after a few seconds. A claude.ai project thread is read from what it posted
-to you that turn (its post_message text), so a turn that posted nothing is silent.
+and, so a thread's message is read the moment it is posted rather than when its turn ends, this PostToolUse hook
+(matcher `mcp__hearthbot__post_message|mcp__hearthbot__post_widget|mcp__claude-code-remote__send_message`):
+
+```json
+{"type": "command", "command": "python3 ~/code/addons/hisho-addon-read-aloud/read_aloud.py forward-post main|souko", "timeout": 10}
+```
+
+It sends each reply over ssh (that machine must reach the workstation with a key) and returns at once; `main|souko`
+gives it to the first workstation that answers, and when none is on the reply is dropped after a few seconds. A
+claude.ai project thread is read from what it posts to you (its post_message text); a refused post is not read.
+The installer adds the local versions of both hooks (`hook` and `post`) on the workstation itself.
+
+With `output: ha` (or `HOST:ha`, through that machine's Hisho) the reader stays on the workstation (window, queue,
+keys) and each sentence plays on Home Assistant's read aloud speaker, set in the Hisho integration's options.
 
 ## Settings
 

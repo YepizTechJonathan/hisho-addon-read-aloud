@@ -1213,3 +1213,23 @@ def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkey
     assert ra.read_json(ra.NOW)["current"] == 0 and speaker.last is None and not speaker.busy()
     speaker.skip()                                   # skip silences the speaker through Hisho
     assert calls[-1].args[-1] == "~/.local/bin/hisho home-assistant say --stop"
+
+
+def test_a_post_is_read_when_it_is_made_and_not_again_at_the_end_of_the_turn(tmp_path, monkeypatch):
+    monkeypatch.setattr(ra, "LIVE", str(tmp_path / "live"))
+    monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    turn = _thread_turn(tmp_path, ["It is fixed."])
+    assert not ra.read_live(turn)
+    post = {**turn, "tool_name": "mcp__hearthbot__post_message", "tool_input": {"text": "Checking the log now."}}
+    item = ra.post_item(post)
+    assert [s["s"] for s in item["segments"]] == ["Checking the log now."] and item["source"] == "Fix the read aloud"
+    assert ra.read_live(turn)                                  # the Stop hook leaves this thread alone now
+    sent = []
+    monkeypatch.setattr(ra, "send", lambda host, item: sent.append(host))
+    ra.forward("main", turn)
+    assert sent == []
+    assert ra.post_item({**turn, "tool_name": "Bash", "tool_input": {"command": "ls"}}) is None
+    coordinator = {**turn, "tool_name": "mcp__claude-code-remote__send_message",
+                   "tool_input": {"message": "note", "visibility": "sent_to_shared_agent"}}
+    assert ra.post_item(coordinator) is None                   # only what reaches the person is read
