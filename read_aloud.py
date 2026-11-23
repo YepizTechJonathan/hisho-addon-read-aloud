@@ -876,13 +876,15 @@ class HASpeaker:
             self.hold()
         return False   # play() returns once the sentence has been heard
 
-    def play(self, status, text, retry=0):
+    def play(self, status, text, retry=0, again=None):
         if self.skipping:
             return
         self.hold()
         self.last = (status, text)
-        ahead, self.ahead = self.ahead, None
-        if ahead and ahead[0] == text:
+        ahead, self.ahead = (None, self.ahead) if again else (self.ahead, None)
+        if again:   # the same sentence under the same id: Home Assistant never says it twice
+            ident, self.proc = again, self.send(text, again)
+        elif ahead and ahead[0] == text:
             ident, self.proc = ahead[2], ahead[1]
         else:
             if ahead:
@@ -892,7 +894,7 @@ class HASpeaker:
                     pass
             ident = os.urandom(6).hex()
             self.proc = self.send(text, ident)
-        upcoming, self.upcoming = self.upcoming, None
+        upcoming, self.upcoming = (None, self.upcoming) if again else (self.upcoming, None)
         if upcoming:   # queued behind this one in Home Assistant: no gap while it is asked for
             nxt = os.urandom(6).hex()
             self.ahead = (upcoming, self.send(upcoming, nxt), nxt)
@@ -919,15 +921,9 @@ class HASpeaker:
         failed = self.proc.returncode not in (0, None) and not self.skipping and not os.path.exists(PAUSED)
         if failed and retry < HA_RETRY:   # Home Assistant restarting or its voice not back yet: say it again
             if retry == 0:
-                log(f"Home Assistant did not say sentence {status.get('current', 0) + 1}; trying again")
-            ahead, self.ahead = self.ahead, None
-            if ahead:
-                try:
-                    ahead[1].kill()
-                except Exception:
-                    pass
-            time.sleep(3)
-            return self.play(status, text, retry + 3)
+                log(f"no answer from Home Assistant for sentence {status.get('current', 0) + 1}; asking again")
+            time.sleep(3)   # the sentence ahead stays queued there; asking again under the same id is safe
+            return self.play(status, text, retry + 3, ident)
         self.until = time.monotonic()
         if os.path.exists(PAUSED) and not self.skipping:
             self.hold()
