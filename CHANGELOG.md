@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.2
+
+- "From: <thread>" says the thread's title on claude.ai: the title the session gave it (rename_thread), else the one a thread listing showed for it. Every listed title is kept (thread-titles.json), so other threads on the machine are named too. Before, project threads were named by their first message.
+
 ## 0.14.1
 
 - Each sentence sent to Home Assistant says whether the reply goes on (`--more`), so a short reply's start waits for the rest and plays as one clip instead of pausing after the first sentence (needs the Hisho integration v1.26.2+ and Hisho's `say --more`).

@@ -61,6 +61,7 @@ PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
 CALIBRATION = os.path.join(STATE, "calibration.json")   # how many cores the voice needs here, measured
 RENAME = os.path.join(STATE, "rename")   # asks the reader to show its rename prompt   # the one window a thread opens in
+TITLES = os.path.join(STATE, "thread-titles.json")   # claude.ai thread titles seen in sessions (cse_ id -> title)
 NAMES = os.path.join(STATE, "thread-names.json")   # names typed in the reader or on the dashboard   # the thread the last reply came from
 # Background colours for the thread band (256-colour terminal), one per thread
 BANDS = (24, 89, 28, 130, 54, 30, 94, 125, 22, 60)
@@ -405,6 +406,43 @@ def relay_title(data):
     return shorten(title, 120)
 
 
+def claude_titles(data, remote):
+    """The thread's title on claude.ai, from what the session itself saw: the latest title it gave its thread
+    (rename_thread), else the title a thread listing (list_threads) showed for this session. Every listing's
+    titles are kept, so a thread that never listed them is still named once any session on this machine has."""
+    titles = read_json(TITLES) or {}
+    path = data.get("transcript_path")
+    own, seen = "", {}
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if "rename_thread" not in line and '\\"sessions\\"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                for c in entry.get("message", {}).get("content", []) if isinstance(
+                        entry.get("message", {}).get("content"), list) else []:
+                    if c.get("type") == "tool_use" and str(c.get("name", "")).endswith("__rename_thread"):
+                        own = str((c.get("input") or {}).get("title") or "") or own
+                    elif c.get("type") == "tool_result":
+                        text = c.get("content")
+                        if isinstance(text, list):
+                            text = "\n".join(t.get("text", "") for t in text if isinstance(t, dict))
+                        for m in re.finditer(r'\{"created_at"[^{}]*?"session_id":\s*"(cse_\w+)"[^{}]*?"title":\s*"((?:[^"\\]|\\.)*)"',
+                                             str(text or "")):
+                            seen[m.group(1)] = json.loads(f'"{m.group(2)}"')
+    key = "cse_" + remote.removeprefix("session_").removeprefix("cse_") if remote else ""
+    if own and key:
+        seen[key] = own
+    if seen and any(titles.get(k) != v for k, v in seen.items()):
+        titles.update(seen)
+        os.makedirs(STATE, exist_ok=True)
+        write_json(TITLES, titles)
+    return shorten(own or titles.get(key, ""), 120)
+
+
 def thread_names():
     return read_json(NAMES) or {}
 
@@ -441,11 +479,6 @@ def thread(data):
         if sid and d.get("cliSessionId") == sid:
             record = d
             break
-    title = thread_names().get(sid) or relay_title(data) or record.get("title") or ""
-    if not title or GENERIC_TITLE.match(title):
-        first = prompts(data)
-        title = shorten(first[0], 70) if first else ""
-    name = title or os.path.basename(record.get("cwd") or data.get("cwd") or "") or "Claude"
     remote = ((record.get("remoteControlSpawn") or {}).get("ccrSessionId")
               or next(iter(record.get("bridgeSessionIds") or []), ""))
     if not remote and sid:   # no desktop app here (Kihon): the running Claude Code says its claude.ai session
@@ -454,6 +487,12 @@ def thread(data):
             if d.get("sessionId") == sid and d.get("bridgeSessionId"):
                 remote = d["bridgeSessionId"]
                 break
+    title = (thread_names().get(sid) or claude_titles(data, remote) or relay_title(data)
+             or record.get("title") or "")
+    if not title or GENERIC_TITLE.match(title):
+        first = prompts(data)
+        title = shorten(first[0], 70) if first else ""
+    name = title or os.path.basename(record.get("cwd") or data.get("cwd") or "") or "Claude"
     url = ""
     if remote.startswith("cse_"):
         url = "https://claude.ai/code/session_" + remote[4:]

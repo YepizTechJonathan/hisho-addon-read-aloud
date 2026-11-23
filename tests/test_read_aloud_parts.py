@@ -1318,3 +1318,26 @@ def test_sentences_are_queued_ahead_in_order_and_dropped_by_a_cut(tmp_path, monk
     speaker.upcoming = []
     speaker.play({"current": 2}, "Three.")
     assert sent[-1][:2] == (1, "Three.") and sent[-1][2] != sent[2][2] and not sent[-1][3]   # sent again under a new id
+
+
+def test_a_thread_is_named_by_its_claude_ai_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(ra, "TITLES", str(tmp_path / "titles.json"))
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
+    monkeypatch.setattr(ra, "CLI_SESSIONS", str(tmp_path / "sessions"))
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "1.json").write_text(json.dumps({"sessionId": "s1", "bridgeSessionId": "session_AAA"}))
+    data = _thread_turn(tmp_path, ["It is fixed."])
+    assert ra.thread(data)["name"] == "Fix the read aloud"          # nothing better: the first message
+    listing = json.dumps({"sessions": [
+        {"created_at": "x", "session_id": "cse_AAA", "state": "working", "title": "Remove long pauses"},
+        {"created_at": "y", "session_id": "cse_BBB", "state": "done", "title": "Fix \"Safari\" export"}]})
+    with open(data["transcript_path"], "a") as f:
+        f.write("\n" + json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": [{"type": "text", "text": listing}]}]}}))
+    assert ra.thread(data)["name"] == "Remove long pauses"          # its title in a thread listing
+    assert ra.read_json(ra.TITLES)["cse_BBB"] == 'Fix "Safari" export'   # every title kept for other threads
+    with open(data["transcript_path"], "a") as f:
+        f.write("\n" + json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__hearthbot__rename_thread", "input": {"title": "Fix read aloud gaps"}}]}}))
+    assert ra.thread(data)["name"] == "Fix read aloud gaps"         # renamed since
