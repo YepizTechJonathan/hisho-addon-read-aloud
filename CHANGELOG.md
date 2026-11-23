@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.2
+
+- On Home Assistant the reader's highlight moves when the speaker starts each sentence, not when it is sent (needs the Hisho integration v1.23.2+).
+
 ## 0.13.1
 
 - On Home Assistant the next sentence is sent while the current one plays, so it starts as soon as that one ends (shorter pause after each period).

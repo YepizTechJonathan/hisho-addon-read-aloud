@@ -1209,7 +1209,8 @@ def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkey
     assert ra.ha_output({"output": "kihon:ha"}) == "kihon:ha" and not ra.ha_output({"output": "dante_tx"})
     speaker = ra.HASpeaker("kihon:ha")
     speaker.play({"current": 0, "segments": [{"s": "One."}]}, "One.")
-    assert calls[0].args[-1] == "~/.local/bin/hisho home-assistant say --wait" and calls[0].sent == b"One."
+    assert calls[0].args[-1].startswith("~/.local/bin/hisho home-assistant say --wait --id ") and calls[0].sent == b"One."
+    assert calls[1].args[-1] == "~/.local/bin/hisho home-assistant say --await-start " + calls[0].args[-1].split()[-1]
     assert ra.read_json(ra.NOW)["current"] == 0 and speaker.last is None and not speaker.busy()
     speaker.skip()                                   # skip silences the speaker through Hisho
     assert calls[-1].args[-1] == "~/.local/bin/hisho home-assistant say --stop"

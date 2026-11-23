@@ -825,8 +825,8 @@ class HASpeaker:
         self.upcoming = None   # the next sentence, set by read(): sent ahead so it starts the moment this one ends
         self.ahead = None      # (text, process) already on its way to Home Assistant
 
-    def send(self, text):
-        proc = subprocess.Popen(ha_say(self.target, "--wait"), stdin=subprocess.PIPE,
+    def send(self, text, ident):
+        proc = subprocess.Popen(ha_say(self.target, "--wait", "--id", ident), stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             proc.stdin.write(text.encode())
@@ -877,23 +877,41 @@ class HASpeaker:
         if self.skipping:
             return
         self.hold()
-        write_json(NOW, {**status, "paused": False, "waiting": len(queued())})
         self.last = (status, text)
         ahead, self.ahead = self.ahead, None
-        self.proc = ahead[1] if ahead and ahead[0] == text else self.send(text)
-        if ahead and ahead[0] != text:
-            try:
-                ahead[1].kill()
-            except Exception:
-                pass
+        if ahead and ahead[0] == text:
+            ident, self.proc = ahead[2], ahead[1]
+        else:
+            if ahead:
+                try:
+                    ahead[1].kill()
+                except Exception:
+                    pass
+            ident = os.urandom(6).hex()
+            self.proc = self.send(text, ident)
         upcoming, self.upcoming = self.upcoming, None
         if upcoming:   # queued behind this one in Home Assistant: no gap while it is asked for
-            self.ahead = (upcoming, self.send(upcoming))
+            nxt = os.urandom(6).hex()
+            self.ahead = (upcoming, self.send(upcoming, nxt), nxt)
+        # the highlight moves when the speaker starts this sentence, not when it is sent
+        started = subprocess.Popen(ha_say(self.target, "--await-start", ident), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shown = False
         while self.proc.poll() is None:
+            if not shown and started.poll() is not None:
+                write_json(NOW, {**status, "paused": False, "waiting": len(queued())})
+                shown = True
             if self.skipping or os.path.exists(PAUSED):
                 self.cut()
                 break
-            time.sleep(0.1)
+            time.sleep(0.05)
+        if not shown and not self.skipping and not os.path.exists(PAUSED):
+            write_json(NOW, {**status, "paused": False, "waiting": len(queued())})
+        try:
+            started.kill()
+        except Exception:
+            pass
+        reap(started, wait=1)
         reap(self.proc, wait=1)
         self.until = time.monotonic()
         if os.path.exists(PAUSED) and not self.skipping:
