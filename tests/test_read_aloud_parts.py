@@ -1208,6 +1208,7 @@ def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkey
     monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
     monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
     monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    monkeypatch.setattr(ra.HASpeaker, "sender", lambda self: None)
     assert ra.ha_output({"output": "kihon:ha"}) == "kihon:ha" and not ra.ha_output({"output": "dante_tx"})
     speaker = ra.HASpeaker("kihon:ha")
     speaker.play({"current": 0, "segments": [{"s": "One."}]}, "One.")
@@ -1270,5 +1271,50 @@ def test_a_sentence_home_assistant_could_not_say_is_tried_again(tmp_path, monkey
     monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
     monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
     monkeypatch.setattr(ra, "log", lambda *a: None)
+    monkeypatch.setattr(ra.HASpeaker, "sender", lambda self: None)
     ra.HASpeaker("kihon:ha").play({"current": 0}, "One.")
     assert sum("--wait" in c.args[-1] for c in calls) == 2 and not codes
+
+
+def test_sentences_are_queued_ahead_in_order_and_dropped_by_a_cut(tmp_path, monkeypatch):
+    class _Proc:
+        returncode = 0
+
+        def __init__(self, args, **kw):
+            self.args, self.stdin = args, self
+
+        def write(self, b):
+            pass
+
+        def close(self):
+            pass
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(ra.HASpeaker, "sender", lambda self: None)
+    monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
+    monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
+    monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    speaker = ra.HASpeaker("kihon:ha")
+    sent = []
+    speaker.queue_ahead = lambda text, ident: sent.append((speaker.round, text, ident))
+    speaker.upcoming = ["Two.", "Three."]
+    speaker.play({"current": 0}, "One.")
+    assert [t for _, t, _ in sent] == ["One.", "Two.", "Three."]   # this one first, then the ones behind it
+    speaker.upcoming = ["Three.", "Four."]
+    speaker.play({"current": 1}, "Two.")
+    assert [t for _, t, _ in sent] == ["One.", "Two.", "Three.", "Four."]   # Two. and Three. already sent
+    assert speaker.ahead == [["Three.", sent[2][2]], ["Four.", sent[3][2]]]
+    speaker.cut()                                    # a pause or skip: Home Assistant drops what waits there
+    assert speaker.ahead == [] and speaker.round == 1
+    speaker.upcoming = []
+    speaker.play({"current": 2}, "Three.")
+    assert sent[-1][:2] == (1, "Three.") and sent[-1][2] != sent[2][2]   # sent again under a new id

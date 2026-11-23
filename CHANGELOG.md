@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0
+
+- On Home Assistant up to 8 sentences are queued ahead of the one playing, in order, so their speech is made while it plays and the integration (v1.25.0+) joins them into one continuous clip: no pause between sentences.
+
 ## 0.13.4
 
 - A sentence asked again after no answer keeps its id, so Home Assistant (integration v1.24.2+) never says it twice, and the next sentence already waiting there is kept.

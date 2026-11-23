@@ -30,7 +30,7 @@ being read is added to the end of the same run, so repeat replays all of it.
 Replies are read in full. Settings come from the add-on's options, written by
 bin/install.sh to ~/.config/hisho/read-aloud.json.
 """
-import fcntl, glob, json, os, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
+import fcntl, glob, json, os, queue, re, select, shlex, shutil, signal, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAY_IT = os.path.join(HERE, "bin", "say-it")
@@ -815,6 +815,7 @@ def ha_output(conf):
     return out if out == "ha" or out.endswith(":ha") else ""
 
 
+HA_AHEAD = 8    # sentences queued in Home Assistant ahead of the one playing (made and joined while it plays)
 HA_RETRY = 90   # s a sentence is tried again while Home Assistant (or its voice) is coming back, before it is dropped
 
 
@@ -825,10 +826,15 @@ class HASpeaker:
     def __init__(self, target):
         self.target, self.proc, self.until, self.last = target, None, time.monotonic(), None
         self.skipping = False
-        self.upcoming = None   # the next sentence, set by read(): sent ahead so it starts the moment this one ends
-        self.ahead = None      # (text, process) already on its way to Home Assistant
+        self.upcoming = []   # the sentences after this one, set by read(): sent ahead so Home Assistant makes
+                             # their speech while this one plays and joins them on without a gap
+        self.ahead = []      # [text, id] sent ahead (or on their way), in order
+        self.sending = queue.Queue()   # (round, text, id) for the sender, which hands them over one at a time
+        self.round = 0       # a cut starts a new round: what the last one still had to send is dropped
+        threading.Thread(target=self.sender, daemon=True).start()
 
     def send(self, text, ident):
+        """Ask for a sentence and wait until it has been spoken (queued there first, if it wasn't sent ahead)."""
         proc = subprocess.Popen(ha_say(self.target, "--wait", "--id", ident), stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -837,6 +843,24 @@ class HASpeaker:
         except OSError:
             pass
         return proc
+
+    def sender(self):
+        """Queue sentences ahead in Home Assistant, one call after the other so they arrive in order."""
+        while True:
+            turn, text, ident = self.sending.get()
+            for _ in range(HA_RETRY // 3):
+                if turn != self.round:
+                    break
+                try:
+                    if subprocess.run(ha_say(self.target, "--id", ident), input=text.encode(), timeout=30,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                        break
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                time.sleep(3)
+
+    def queue_ahead(self, text, ident):
+        self.sending.put((self.round, text, ident))
 
     def start(self):
         pass
@@ -847,12 +871,12 @@ class HASpeaker:
     def cut(self):
         """Silence now (also from the pause and skip signals): drop the sentence on its way and stop
         the speaker."""
-        ahead, self.ahead = self.ahead, None
-        for proc in (self.proc, ahead[1] if ahead else None):
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        self.round += 1      # the stop drops what was sent ahead; the sender drops what it still had
+        self.ahead = []
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
         subprocess.Popen(ha_say(self.target, "--stop"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -881,23 +905,18 @@ class HASpeaker:
             return
         self.hold()
         self.last = (status, text)
-        ahead, self.ahead = (None, self.ahead) if again else (self.ahead, None)
         if again:   # the same sentence under the same id: Home Assistant never says it twice
-            ident, self.proc = again, self.send(text, again)
-        elif ahead and ahead[0] == text:
-            ident, self.proc = ahead[2], ahead[1]
-        else:
-            if ahead:
-                try:
-                    ahead[1].kill()
-                except Exception:
-                    pass
-            ident = os.urandom(6).hex()
-            self.proc = self.send(text, ident)
-        upcoming, self.upcoming = (None, self.upcoming) if again else (self.upcoming, None)
-        if upcoming:   # queued behind this one in Home Assistant: no gap while it is asked for
-            nxt = os.urandom(6).hex()
-            self.ahead = (upcoming, self.send(upcoming, nxt), nxt)
+            ident = again
+        elif self.ahead and self.ahead[0][0] == text:
+            ident = self.ahead.pop(0)[1]
+        else:       # not sent ahead: it goes first, through the sender, so the ones behind can't overtake it
+            self.ahead, ident = [], os.urandom(6).hex()
+            self.queue_ahead(text, ident)
+        if not again:   # queued behind this one in Home Assistant: their speech is made while it plays
+            for nxt in self.upcoming[len(self.ahead):]:
+                self.ahead.append([nxt, os.urandom(6).hex()])
+                self.queue_ahead(*self.ahead[-1])
+        self.proc = self.send(text, ident)   # already queued there: answers once it has been spoken
         # the highlight moves when the speaker starts this sentence, not when it is sent
         started = subprocess.Popen(ha_say(self.target, "--await-start", ident), stdin=subprocess.DEVNULL,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1199,7 +1218,7 @@ def worker():
         os._exit(0)
     signal.signal(signal.SIGTERM, on_term)
 
-    import queue, threading
+    import queue, threading  # noqa: F811
     import numpy as np
     conf = settings()
     voice, speed = conf["voice"], int(conf["speed"]) / 100
@@ -1271,7 +1290,7 @@ def worker():
                     log(f"voice behind: {waited:.1f} s of silence before sentence {i + 1} of {len(segs)}"
                         f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
                 if on_ha:
-                    speaker.upcoming = segs[i + 1]["s"] if i + 1 < len(segs) else None
+                    speaker.upcoming = [seg["s"] for seg in segs[i + 1:i + 1 + HA_AHEAD]]
                 speaker.play(status, pcm)
         finally:
             done.set()
