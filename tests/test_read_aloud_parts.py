@@ -1080,6 +1080,8 @@ def test_forward_to_ha_says_the_reply_through_hisho(tmp_path, monkeypatch):
     class _Proc:
         def __init__(self, args, **kw):
             self.args, self.stdin, self.sent = args, self, b""
+            if args[0] == "sh":   # a workstation: the reply waits in a file
+                self.args, self.sent = [*args[:3], "~/.local/bin/say-it --queue"], open(args[3], "rb").read()
             calls.append(self)
 
         def write(self, b):
@@ -1091,10 +1093,17 @@ def test_forward_to_ha_says_the_reply_through_hisho(tmp_path, monkeypatch):
     monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
     monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
     monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    monkeypatch.setattr(ra, "STATE", str(tmp_path / "state"))
+    monkeypatch.setattr(ra, "HA_TARGET", str(tmp_path / "state" / "ha-target"))
     ra.forward("souko,ha,kihon:ha", _thread_turn(tmp_path, ["It is fixed."]))
     assert [c.args[-1] for c in calls] == ["~/.local/bin/say-it --queue", "say", "~/.local/bin/hisho home-assistant say"]
     assert calls[1].args == ["hisho", "home-assistant", "say"] and calls[1].sent == b"It is fixed."
     assert calls[2].args[-2] == "kihon" and calls[2].sent == b"It is fixed."
+    assert open(ra.HA_TARGET).read() == "kihon:ha"          # repeat now asks Home Assistant
+    calls.clear()
+    assert ra.ha_repeat() and calls[0].args[-1] == "~/.local/bin/hisho home-assistant say --repeat"
+    os.remove(ra.HA_TARGET)
+    assert not ra.ha_repeat()
 
 
 def test_a_channel_thread_is_read_from_what_it_posted_to_the_channel(tmp_path):
@@ -1115,10 +1124,11 @@ def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp
     class _Ssh:
         def __init__(self, args, **kw):
             sent["args"] = args
+            sent["item"] = json.load(open(args[-1]))   # the reply waits in a file the shell hands to ssh
             self.stdin = self
 
         def write(self, b):
-            sent["item"] = json.loads(b)
+            pass
 
         def close(self):
             pass
@@ -1130,7 +1140,9 @@ def test_forward_sends_the_reply_to_the_workstation_and_queue_reads_it_there(tmp
     monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
     monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
     ra.forward("souko", _thread_turn(tmp_path, ["It is fixed."]))
-    assert sent["args"][-2:] == ["souko", "~/.local/bin/say-it --queue"]
+    assert sent["args"][:2] == ["sh", "-c"] and "souko '~/.local/bin/say-it --queue'" in sent["args"][2]
+    ra.forward("hashira-kocho-main|souko", _thread_turn(tmp_path, ["It is fixed."]))
+    assert sent["args"][2].index("hashira-kocho-main") < sent["args"][2].index("|| ssh") < sent["args"][2].index("souko")
     assert sent["item"]["source"] == "Fix the read aloud" and sent["item"]["asked"] == "is it fixed?"
     assert [s["s"] for s in sent["item"]["segments"]] == ["It is fixed."]
 
@@ -1165,3 +1177,39 @@ def test_the_reader_does_not_open_by_itself_over_a_fullscreen_game(monkeypatch):
     assert not ra.fullscreen_focused()
     monkeypatch.setattr(ra, "hypr", lambda *a: "")
     assert not ra.fullscreen_focused()
+
+
+def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkeypatch):
+    calls = []
+
+    class _Proc:
+        def __init__(self, args, **kw):
+            self.args, self.stdin, self.sent = args, self, b""
+            calls.append(self)
+
+        def write(self, b):
+            self.sent += b
+
+        def close(self):
+            pass
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
+    monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
+    monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    assert ra.ha_output({"output": "kihon:ha"}) == "kihon:ha" and not ra.ha_output({"output": "dante_tx"})
+    speaker = ra.HASpeaker("kihon:ha")
+    speaker.play({"current": 0, "segments": [{"s": "One."}]}, "One.")
+    assert calls[0].args[-1] == "~/.local/bin/hisho home-assistant say --wait" and calls[0].sent == b"One."
+    assert ra.read_json(ra.NOW)["current"] == 0 and speaker.last is None and not speaker.busy()
+    speaker.skip()                                   # skip silences the speaker through Hisho
+    assert calls[-1].args[-1] == "~/.local/bin/hisho home-assistant say --stop"

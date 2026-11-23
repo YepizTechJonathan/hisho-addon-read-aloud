@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+- Repeat (Super+Alt+R) works when replies are read on Home Assistant: forward remembers its HA target and repeat asks it to read the last reply again.
+- New output `ha` / `HOST:ha`: the reader (window, queue, pause, skip, repeat, keys) stays on this workstation and each sentence plays on Home Assistant's read aloud speaker, sent and waited for; no voice engine runs here then.
+- forward `A|B`: the first workstation that answers gets the reply, so only one reader reads it.
+
 ## 0.12.1
 
 - forward target `HOST:ha` says the reply on Home Assistant's read aloud speaker through HOST's Hisho (for a machine without Home Assistant's login, e.g. a Kocho PC forwarding to Kihon).

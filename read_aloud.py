@@ -30,7 +30,7 @@ being read is added to the end of the same run, so repeat replays all of it.
 Replies are read in full. Settings come from the add-on's options, written by
 bin/install.sh to ~/.config/hisho/read-aloud.json.
 """
-import fcntl, glob, json, os, re, select, shutil, signal, subprocess, sys, time
+import fcntl, glob, json, os, re, select, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAY_IT = os.path.join(HERE, "bin", "say-it")
@@ -55,6 +55,7 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
             "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
+HA_TARGET = os.path.join(STATE, "ha-target")   # forward's last Home Assistant target: repeat asks it
 PAUSED = os.path.join(STATE, "paused")
 THREAD_WINDOW = os.path.join(STATE, "thread-window.json")
 CALIBRATION = os.path.join(STATE, "calibration.json")   # how many cores the voice needs here, measured
@@ -243,17 +244,47 @@ def forward(host, data):
         if target == "ha" or target.endswith(":ha"):
             # Home Assistant's read aloud speaker (the Hisho integration's options; refused there while off);
             # HOST:ha asks that machine's Hisho to say it, for one without Home Assistant's login
-            args, body = ["hisho", "home-assistant", "say"], " ".join(s["s"] for s in segs)
-            if target != "ha":
-                args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", target[:-3],
-                        "~/.local/bin/hisho home-assistant say"]
+            args, body = ha_say(target), " ".join(s["s"] for s in segs)
+            os.makedirs(STATE, exist_ok=True)
+            with open(HA_TARGET, "w") as f:
+                f.write(target)
         else:
-            args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", target, "~/.local/bin/say-it --queue"]
-            body = json.dumps(item)
+            # "main|souko": the first workstation that answers reads it (one reader, never two)
+            hosts = [h for h in target.split("|") if h]
+            args = ["sh", "-c", " || ".join(
+                f"ssh -o BatchMode=yes -o ConnectTimeout=4 {shlex.quote(h)} '~/.local/bin/say-it --queue' < \"$0\""
+                for h in hosts) + "; rm -f \"$0\""]
+            fd, path = tempfile.mkstemp(prefix="read-aloud-", suffix=".json")
+            with os.fdopen(fd, "w") as f:
+                json.dump(item, f)
+            subprocess.Popen(args[:3] + [path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            continue
         proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
         proc.stdin.write(body.encode())
         proc.stdin.close()
+
+
+def ha_say(target, *extra):
+    """The command that reads on Home Assistant's read aloud speaker for a forward target (ha / HOST:ha)."""
+    if target == "ha":
+        return ["hisho", "home-assistant", "say", *extra]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", target[:-3],
+            " ".join(["~/.local/bin/hisho", "home-assistant", "say", *extra])]
+
+
+def ha_repeat():
+    """Repeat on Home Assistant when this machine's replies go there; False when they are read here."""
+    try:
+        target = open(HA_TARGET).read().strip()
+    except OSError:
+        return False
+    if not target:
+        return False
+    subprocess.Popen(ha_say(target, "--repeat"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return True
 
 
 def queue_item(item):
@@ -747,6 +778,82 @@ class Speaker:
                 self.write(status, pcm, tries - 1)
 
 
+def ha_output(conf):
+    """The output setting names Home Assistant's read aloud speaker ("ha", or "HOST:ha" through HOST's Hisho)."""
+    out = conf.get("output") or ""
+    return out if out == "ha" or out.endswith(":ha") else ""
+
+
+class HASpeaker:
+    """Speaker's stand-in when the voice plays on Home Assistant's read aloud speaker: each sentence is
+    sent there and waited for, so the reader window, pause, skip and repeat work as they do here."""
+
+    def __init__(self, target):
+        self.target, self.proc, self.until, self.last = target, None, time.monotonic(), None
+        self.skipping = False
+
+    def start(self):
+        pass
+
+    def close(self):
+        pass
+
+    def cut(self):
+        """Silence now (also from the pause and skip signals): drop the sentence on its way and stop
+        the speaker."""
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+        subprocess.Popen(ha_say(self.target, "--stop"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def skip(self):
+        self.skipping = True
+        self.cut()
+
+    def hold(self):
+        """While paused, wait; then say the sentence that was cut off again."""
+        if self.skipping or not os.path.exists(PAUSED):
+            return
+        cut_off, self.last = self.last, None
+        write_json(NOW, {**((cut_off or [None])[0] or read_json(NOW) or {}), "paused": True, "waiting": len(queued())})
+        while os.path.exists(PAUSED):
+            time.sleep(0.1)
+        if cut_off and not self.skipping:
+            self.play(*cut_off)
+
+    def busy(self):
+        if not self.skipping:
+            self.hold()
+        return False   # play() returns once the sentence has been heard
+
+    def play(self, status, text):
+        if self.skipping:
+            return
+        self.hold()
+        write_json(NOW, {**status, "paused": False, "waiting": len(queued())})
+        self.last = (status, text)
+        self.proc = subprocess.Popen(ha_say(self.target, "--wait"), stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.proc.stdin.write(text.encode())
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        while self.proc.poll() is None:
+            if self.skipping or os.path.exists(PAUSED):
+                self.cut()
+                break
+            time.sleep(0.1)
+        reap(self.proc, wait=1)
+        self.until = time.monotonic()
+        if os.path.exists(PAUSED) and not self.skipping:
+            self.hold()
+        elif not os.path.exists(PAUSED):
+            self.last = None
+
+
 def skip(source=None):
     """End the reply being read and go straight to the next one waiting. The skipped
     reply stays in the run, so Repeat still has it."""
@@ -1019,7 +1126,8 @@ def worker():
     import numpy as np
     conf = settings()
     voice, speed = conf["voice"], int(conf["speed"]) / 100
-    kokoro = voice_engine(conf)
+    on_ha = ha_output(conf)   # the voice is made and played by Home Assistant: no engine here
+    kokoro = None if on_ha else voice_engine(conf)
     try:
         os.remove(PAUSED)  # a new run never starts paused
     except OSError:
@@ -1040,7 +1148,7 @@ def worker():
 
     open(RUN, "w").close()  # a new run starts (what waits joins it if nothing can play)
     try:
-        speaker = Speaker(conf.get("fallback_output") or "", conf.get("output") or "")
+        speaker = HASpeaker(on_ha) if on_ha else Speaker(conf.get("fallback_output") or "", conf.get("output") or "")
     except NoOutput:
         return no_output()
     signal.signal(signal.SIGUSR1, lambda *_: speaker.cut())   # pause: silence at once
@@ -1054,8 +1162,11 @@ def worker():
             for seg in segs:
                 if done.is_set():
                     return
-                samples, _sr = kokoro.create(seg["s"], voice=voice, speed=speed, lang="en-us")
-                pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
+                if on_ha:   # Home Assistant makes the speech: hand it the text
+                    pcm = seg["s"]
+                else:
+                    samples, _sr = kokoro.create(seg["s"], voice=voice, speed=speed, lang="en-us")
+                    pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
                 while not done.is_set():
                     try:
                         ready.put(pcm, timeout=0.2)
@@ -1078,7 +1189,7 @@ def worker():
                 if speaker.skipping:
                     break
                 waited = time.monotonic() - max(asked, speaker.until)   # silence after the last sentence ended
-                if waited > LAG and not os.path.exists(PAUSED):
+                if waited > LAG and not os.path.exists(PAUSED) and not on_ha:
                     gaps.append(waited)
                     log(f"voice behind: {waited:.1f} s of silence before sentence {i + 1} of {len(segs)}"
                         f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
@@ -1136,7 +1247,7 @@ def worker():
         except NoOutput:
             return no_output()
     log("reading finished")
-    if len(gaps) > GAPS:
+    if len(gaps) > GAPS and not on_ha:
         step_up(conf)
     speaker.close()
 
@@ -1752,6 +1863,8 @@ def main():
     elif cmd == "stop":
         stop()
     elif cmd == "repeat":
+        if not ha_output(settings()) and ha_repeat():
+            sys.exit(0)
         stop("repeat")
         items = run_items()
         for item in items:
