@@ -1091,9 +1091,10 @@ def test_forward_to_ha_says_the_reply_through_hisho(tmp_path, monkeypatch):
     monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
     monkeypatch.setattr(ra, "DESKTOP_SESSIONS", str(tmp_path / "none"))
     monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
-    ra.forward("souko,ha", _thread_turn(tmp_path, ["It is fixed."]))
-    assert [c.args[-1] for c in calls] == ["~/.local/bin/say-it --queue", "say"]
+    ra.forward("souko,ha,kihon:ha", _thread_turn(tmp_path, ["It is fixed."]))
+    assert [c.args[-1] for c in calls] == ["~/.local/bin/say-it --queue", "say", "~/.local/bin/hisho home-assistant say"]
     assert calls[1].args == ["hisho", "home-assistant", "say"] and calls[1].sent == b"It is fixed."
+    assert calls[2].args[-2] == "kihon" and calls[2].sent == b"It is fixed."
 
 
 def test_a_channel_thread_is_read_from_what_it_posted_to_the_channel(tmp_path):
