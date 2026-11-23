@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.3
+
+- A sentence Home Assistant could not say (restarting, or its voice not back yet) is tried again every few seconds for up to 90 s instead of being dropped.
+
 ## 0.13.2
 
 - On Home Assistant the reader's highlight moves when the speaker starts each sentence, not when it is sent (needs the Hisho integration v1.23.2+).

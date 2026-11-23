@@ -815,6 +815,9 @@ def ha_output(conf):
     return out if out == "ha" or out.endswith(":ha") else ""
 
 
+HA_RETRY = 90   # s a sentence is tried again while Home Assistant (or its voice) is coming back, before it is dropped
+
+
 class HASpeaker:
     """Speaker's stand-in when the voice plays on Home Assistant's read aloud speaker: each sentence is
     sent there and waited for, so the reader window, pause, skip and repeat work as they do here."""
@@ -873,7 +876,7 @@ class HASpeaker:
             self.hold()
         return False   # play() returns once the sentence has been heard
 
-    def play(self, status, text):
+    def play(self, status, text, retry=0):
         if self.skipping:
             return
         self.hold()
@@ -913,6 +916,18 @@ class HASpeaker:
             pass
         reap(started, wait=1)
         reap(self.proc, wait=1)
+        failed = self.proc.returncode not in (0, None) and not self.skipping and not os.path.exists(PAUSED)
+        if failed and retry < HA_RETRY:   # Home Assistant restarting or its voice not back yet: say it again
+            if retry == 0:
+                log(f"Home Assistant did not say sentence {status.get('current', 0) + 1}; trying again")
+            ahead, self.ahead = self.ahead, None
+            if ahead:
+                try:
+                    ahead[1].kill()
+                except Exception:
+                    pass
+            time.sleep(3)
+            return self.play(status, text, retry + 3)
         self.until = time.monotonic()
         if os.path.exists(PAUSED) and not self.skipping:
             self.hold()

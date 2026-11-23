@@ -1193,6 +1193,8 @@ def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkey
         def close(self):
             pass
 
+        returncode = 0
+
         def poll(self):
             return 0
 
@@ -1234,3 +1236,39 @@ def test_a_post_is_read_when_it_is_made_and_not_again_at_the_end_of_the_turn(tmp
     coordinator = {**turn, "tool_name": "mcp__claude-code-remote__send_message",
                    "tool_input": {"message": "note", "visibility": "sent_to_shared_agent"}}
     assert ra.post_item(coordinator) is None                   # only what reaches the person is read
+
+
+
+def test_a_sentence_home_assistant_could_not_say_is_tried_again(tmp_path, monkeypatch):
+    codes = [1, 0]          # the first try fails (Home Assistant restarting), the second works
+    calls = []
+
+    class _Proc:
+        def __init__(self, args, **kw):
+            self.args, self.stdin = args, self
+            self.returncode = codes.pop(0) if "--wait" in args[-1] else 0
+            calls.append(self)
+
+        def write(self, b):
+            pass
+
+        def close(self):
+            pass
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(ra.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
+    monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
+    monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    monkeypatch.setattr(ra, "log", lambda *a: None)
+    ra.HASpeaker("kihon:ha").play({"current": 0}, "One.")
+    assert sum("--wait" in c.args[-1] for c in calls) == 2 and not codes
