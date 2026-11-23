@@ -822,6 +822,18 @@ class HASpeaker:
     def __init__(self, target):
         self.target, self.proc, self.until, self.last = target, None, time.monotonic(), None
         self.skipping = False
+        self.upcoming = None   # the next sentence, set by read(): sent ahead so it starts the moment this one ends
+        self.ahead = None      # (text, process) already on its way to Home Assistant
+
+    def send(self, text):
+        proc = subprocess.Popen(ha_say(self.target, "--wait"), stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc.stdin.write(text.encode())
+            proc.stdin.close()
+        except OSError:
+            pass
+        return proc
 
     def start(self):
         pass
@@ -832,10 +844,12 @@ class HASpeaker:
     def cut(self):
         """Silence now (also from the pause and skip signals): drop the sentence on its way and stop
         the speaker."""
-        try:
-            self.proc.kill()
-        except Exception:
-            pass
+        ahead, self.ahead = self.ahead, None
+        for proc in (self.proc, ahead[1] if ahead else None):
+            try:
+                proc.kill()
+            except Exception:
+                pass
         subprocess.Popen(ha_say(self.target, "--stop"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -865,13 +879,16 @@ class HASpeaker:
         self.hold()
         write_json(NOW, {**status, "paused": False, "waiting": len(queued())})
         self.last = (status, text)
-        self.proc = subprocess.Popen(ha_say(self.target, "--wait"), stdin=subprocess.PIPE,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            self.proc.stdin.write(text.encode())
-            self.proc.stdin.close()
-        except OSError:
-            pass
+        ahead, self.ahead = self.ahead, None
+        self.proc = ahead[1] if ahead and ahead[0] == text else self.send(text)
+        if ahead and ahead[0] != text:
+            try:
+                ahead[1].kill()
+            except Exception:
+                pass
+        upcoming, self.upcoming = self.upcoming, None
+        if upcoming:   # queued behind this one in Home Assistant: no gap while it is asked for
+            self.ahead = (upcoming, self.send(upcoming))
         while self.proc.poll() is None:
             if self.skipping or os.path.exists(PAUSED):
                 self.cut()
@@ -1224,6 +1241,8 @@ def worker():
                     gaps.append(waited)
                     log(f"voice behind: {waited:.1f} s of silence before sentence {i + 1} of {len(segs)}"
                         f" ({len(segs[i]['s'])} characters){' (first of the reply)' if i == 0 else ''}")
+                if on_ha:
+                    speaker.upcoming = segs[i + 1]["s"] if i + 1 < len(segs) else None
                 speaker.play(status, pcm)
         finally:
             done.set()

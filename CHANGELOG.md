@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+- On Home Assistant the next sentence is sent while the current one plays, so it starts as soon as that one ends (shorter pause after each period).
+
 ## 0.13.0
 
 - A thread's message is read the moment it is posted (PostToolUse hook: `post` here, `forward-post HOSTS` on another machine), not when the thread's turn ends; the Stop hook then leaves that thread alone. The installer adds the hook.
