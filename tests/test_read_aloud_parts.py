@@ -496,6 +496,15 @@ def test_the_assistants_thread_line_names_the_thread_and_a_rename_wins(tmp_path,
     assert ra.prompts(data) == ["Text to speech for the responses please", "which thread am I hearing?"]
 
 
+def test_the_thread_line_stops_at_the_title_when_the_note_goes_on(tmp_path, monkeypatch):
+    data = _session(tmp_path, monkeypatch, "Remote Control session (from a project)", "cse_01ABC")
+    monkeypatch.setattr(ra, "NAMES", str(tmp_path / "names.json"))
+    with open(data["transcript_path"], "a") as f:
+        f.write("\n" + json.dumps(_relay("Fix read aloud after Souko move (continued). This continues an older "
+                                         "thread whose device went offline (thread id cmsg_01X).")))
+    assert ra.thread(data)["name"] == "Fix read aloud after Souko move (continued)"
+
+
 def test_a_name_typed_for_a_thread_wins_over_everything(tmp_path, monkeypatch):
     data = _session(tmp_path, monkeypatch, "Souko monitor setup", "session_01XYZ")
     for name in ("NAMES", "NOW", "RUN", "STATE"):

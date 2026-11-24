@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.4
+
+- "From:" no longer reads out the rest of the assistant's note when it follows the thread's title on the same line ("Fix read aloud after Souko move (continued). This continues an older thread..."): the name stops at the title.
+
 ## 0.14.3
 
 - Each sentence sent to Home Assistant carries the thread's name and its band colour (`--thread`, `--color`), so speaker screens can show "From: <thread>" in the right colour (needs the Hisho integration v1.26.3+ and Hisho's `say --thread/--color`). Text sent over ssh is now quoted.

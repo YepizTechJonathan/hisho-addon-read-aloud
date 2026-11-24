@@ -401,8 +401,8 @@ def relay_title(data):
                 content = "\n".join(c.get("text", "") for c in content if c.get("type") == "text")
             for note in re.findall(r"<relay\b[^>]*>.*?<note>(.*?)</note>", content, flags=re.S):
                 found = re.search(r"^\s*Thread:\s*(.+?)\s*$", html.unescape(note), flags=re.M)
-                if found:
-                    title = found.group(1)
+                if found:   # the title alone, not the note's sentences that follow it on the same line
+                    title = re.split(r"(?<=[^.\s])\.\s+(?=[A-Z])", found.group(1), maxsplit=1)[0].rstrip(".")
     return shorten(title, 120)
 
 
