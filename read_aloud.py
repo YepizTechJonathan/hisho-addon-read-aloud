@@ -303,7 +303,7 @@ def ha_say(target, *extra):
     if target == "ha":
         return ["hisho", "home-assistant", "say", *extra]
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", target[:-3],
-            " ".join(["~/.local/bin/hisho", "home-assistant", "say", *extra])]
+            " ".join(["~/.local/bin/hisho", "home-assistant", "say", *map(shlex.quote, extra)])]
 
 
 def ha_repeat():
@@ -871,11 +871,12 @@ class HASpeaker:
         self.ahead = []      # [text, id] sent ahead (or on their way), in order
         self.sending = queue.Queue()   # (round, text, id, more) for the sender, which hands them over one at a time
         self.round = 0       # a cut starts a new round: what the last one still had to send is dropped
+        self.info = []       # --thread NAME --color #rrggbb of the reply being read, for speaker screens
         threading.Thread(target=self.sender, daemon=True).start()
 
     def send(self, text, ident):
         """Ask for a sentence and wait until it has been spoken (queued there first, if it wasn't sent ahead)."""
-        proc = subprocess.Popen(ha_say(self.target, "--wait", "--id", ident), stdin=subprocess.PIPE,
+        proc = subprocess.Popen(ha_say(self.target, "--wait", "--id", ident, *self.info), stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             proc.stdin.write(text.encode())
@@ -887,12 +888,12 @@ class HASpeaker:
     def sender(self):
         """Queue sentences ahead in Home Assistant, one call after the other so they arrive in order."""
         while True:
-            turn, text, ident, more = self.sending.get()
+            turn, text, ident, more, info = self.sending.get()
             for _ in range(HA_RETRY // 3):
                 if turn != self.round:
                     break
                 try:
-                    if subprocess.run(ha_say(self.target, "--id", ident, *(["--more"] if more else [])),
+                    if subprocess.run(ha_say(self.target, "--id", ident, *(["--more"] if more else []), *info),
                                       input=text.encode(), timeout=30,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
                         break
@@ -902,7 +903,7 @@ class HASpeaker:
 
     def queue_ahead(self, text, ident, more=False):
         """more: the reply goes on after this sentence, so Home Assistant waits a moment to start it with the rest."""
-        self.sending.put((self.round, text, ident, more))
+        self.sending.put((self.round, text, ident, more, self.info))
 
     def start(self):
         pass
@@ -947,6 +948,8 @@ class HASpeaker:
             return
         self.hold()
         self.last = (status, text)
+        self.info = (["--thread", status["source"]] if status.get("source") else []) + (
+            ["--color", band_hex(status["thread"])] if status.get("thread") else [])
         if again:   # the same sentence under the same id: Home Assistant never says it twice
             ident = again
         elif self.ahead and self.ahead[0][0] == text:
@@ -1597,6 +1600,17 @@ def band(key):
     """The thread's colour, the same every time for the same thread."""
     import zlib
     return BANDS[zlib.crc32(key.encode()) % len(BANDS)] if key else 238
+
+
+def band_hex(key):
+    """The thread's colour as #rrggbb (a terminal's 256-colour cube or grey ramp), for screens that aren't terminals."""
+    n = band(key)
+    if n >= 232:
+        v = 8 + (n - 232) * 10
+        return f"#{v:02x}{v:02x}{v:02x}"
+    n -= 16
+    level = lambda i: 0 if i == 0 else 55 + 40 * i
+    return "#" + "".join(f"{level(c):02x}" for c in (n // 36, n // 6 % 6, n % 6))
 
 
 def caller():

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.3
+
+- Each sentence sent to Home Assistant carries the thread's name and its band colour (`--thread`, `--color`), so speaker screens can show "From: <thread>" in the right colour (needs the Hisho integration v1.26.3+ and Hisho's `say --thread/--color`). Text sent over ssh is now quoted.
+
 ## 0.14.2
 
 - "From: <thread>" says the thread's title on claude.ai: the title the session gave it (rename_thread), else the one a thread listing showed for it. Every listed title is kept (thread-titles.json), so other threads on the machine are named too. Before, project threads were named by their first message.

@@ -1,6 +1,7 @@
 """Read aloud add-on: replies become sentences, the reader highlights and has an opacity slider, keys."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -1341,3 +1342,42 @@ def test_a_thread_is_named_by_its_claude_ai_title(tmp_path, monkeypatch):
         f.write("\n" + json.dumps({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "name": "mcp__hearthbot__rename_thread", "input": {"title": "Fix read aloud gaps"}}]}}))
     assert ra.thread(data)["name"] == "Fix read aloud gaps"         # renamed since
+
+
+def test_home_assistant_is_told_the_thread_and_its_colour(tmp_path, monkeypatch):
+    calls = []
+
+    class _Proc:
+        returncode = 0
+
+        def __init__(self, args, **kw):
+            self.args, self.stdin = args, self
+            calls.append(args)
+
+        def write(self, b):
+            pass
+
+        def close(self):
+            pass
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(ra.HASpeaker, "sender", lambda self: None)
+    monkeypatch.setattr(ra, "NOW", str(tmp_path / "now.json"))
+    monkeypatch.setattr(ra, "PAUSED", str(tmp_path / "paused"))
+    monkeypatch.setattr(ra, "QUEUE", str(tmp_path / "queue"))
+    speaker = ra.HASpeaker("kihon:ha")
+    sent = []
+    speaker.queue_ahead = lambda text, ident, more=False: sent.append(list(speaker.info))
+    speaker.play({"current": 0, "source": "Fix read aloud's gaps", "thread": "s1"}, "One.")
+    colour = ra.band_hex("s1")
+    assert re.fullmatch(r"#[0-9a-f]{6}", colour) and sent == [["--thread", "Fix read aloud's gaps", "--color", colour]]
+    assert calls[0][-1].endswith(f"--thread 'Fix read aloud'\"'\"'s gaps' --color '{colour}'")   # quoted for ssh
