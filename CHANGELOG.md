@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.0
+
+- New option `screen_hides_reader` (on): when the voice plays on Home Assistant and a speaker there shows the words on its screen (its "When talking" is Read aloud), the reader window doesn't open by itself; its key still opens it. Asks Hisho's `home-assistant screens` (needs Hisho 9a36d64+).
+
 ## 0.14.4
 
 - "From:" no longer reads out the rest of the assistant's note when it follows the thread's title on the same line ("Fix read aloud after Souko move (continued). This continues an older thread..."): the name stops at the title.

@@ -13,7 +13,7 @@
 name: read-aloud
 title: Read aloud
 description: Claude's replies read aloud on your workstation, with a reader window that follows along.
-version: 0.14.4
+version: 0.15.0
 you_need:
   - "Nothing beyond Hisho on the workstation: Claude Code, PipeWire and about 600 MB of disk for the local voice"
   - "Optional: Hyprland (Omarchy) for the keys and the reader window"
@@ -24,6 +24,7 @@ options:
   speed: 100                       # % of normal speed
   opacity: 90                      # reader window, % (the window's slider changes it too)
   auto_open: true                  # open the reader window when reading starts
+  screen_hides_reader: true        # ...but not while a Home Assistant speaker's screen shows the words
   announce_thread: true            # say "From: <thread>." when the voice moves to another thread
   auto_pause: true                 # opening the thread pauses reading; the pause key resumes
   title_size: 2                    # thread name in the reader, times normal (1-4; needs kitty, else 1)
@@ -47,6 +48,7 @@ schema:
   speed: int
   opacity: int
   auto_open: bool
+  screen_hides_reader: bool
   announce_thread: bool
   auto_pause: bool
   title_size: int
@@ -134,6 +136,9 @@ help:
   auto_open:
     label: Open the reader window by itself
     say: "On: the reader window opens when reading starts and closes when it ends, except while a fullscreen game has focus. Off: open it with its key."
+  screen_hides_reader:
+    label: Keep it closed while a speaker's screen shows the words
+    say: "On: when the voice plays on a Home Assistant speaker whose screen shows what is read (its When talking setting is Read aloud), the reader window doesn't open by itself. Its key still opens it."
   announce_thread:
     label: Say which thread is read
     say: "On: it says \"From:\" and the thread's name when it moves to a reply from another thread."

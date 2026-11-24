@@ -1189,6 +1189,32 @@ def test_the_reader_does_not_open_by_itself_over_a_fullscreen_game(monkeypatch):
     assert not ra.fullscreen_focused()
 
 
+def test_the_reader_does_not_open_by_itself_while_a_speaker_screen_shows_the_words(monkeypatch):
+    monkeypatch.setattr(ra, "has_hyprland", lambda: True)
+    monkeypatch.setattr(ra, "log", lambda *a: None)
+    monkeypatch.setattr(ra, "hypr", lambda *a: json.dumps({"class": "kitty", "fullscreen": 0}))
+    monkeypatch.setattr(ra, "settings", lambda: {**ra.DEFAULTS, "output": "kihon:ha"})
+    asked = []
+
+    class _Done:
+        returncode, stdout = 0, "speaker3\n"
+
+    monkeypatch.setattr(ra.subprocess, "run", lambda cmd, **k: asked.append(cmd) or _Done())
+    monkeypatch.setattr(ra.subprocess, "Popen", lambda *a, **k: pytest.fail("reader launched while the screen shows it"))
+    monkeypatch.setattr(ra, "clients", lambda: pytest.fail("reader looked for"))
+    ra.open_reader(auto=True)
+    assert asked[0][:5] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"] and asked[0][-1].endswith("screens")
+    _Done.stdout = ""                                   # no screen showing it: the window opens as before
+    looked = []
+    monkeypatch.setattr(ra, "clients", lambda: looked.append(1) or [])
+    monkeypatch.setattr(ra.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(ra.time, "sleep", lambda s: None)
+    ra.open_reader(auto=True)
+    assert looked
+    monkeypatch.setattr(ra, "settings", lambda: {**ra.DEFAULTS, "output": ""})   # read here: nothing to ask
+    assert ra.speaker_screens() == []
+
+
 def test_on_home_assistant_each_sentence_is_sent_and_waited_for(tmp_path, monkeypatch):
     calls = []
 

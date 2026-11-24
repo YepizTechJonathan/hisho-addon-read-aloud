@@ -41,6 +41,7 @@ in `~/.local/state/hisho/read-aloud/read-aloud.log` ("voice behind").
   - `speed` (int, default `100`)
   - `opacity` (int, default `90`)
   - `auto_open` (bool, default `True`)
+  - `screen_hides_reader` (bool, default `True`)
   - `announce_thread` (bool, default `True`)
   - `auto_pause` (bool, default `True`)
   - `title_size` (int, default `2`)

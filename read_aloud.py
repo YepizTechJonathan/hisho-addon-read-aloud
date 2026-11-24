@@ -53,7 +53,8 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_read": "SUPER + ALT + T", "key_repeat": "SUPER + ALT + R", "key_stop": "SUPER + ALT + X",
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
-            "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True}
+            "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True,
+            "screen_hides_reader": True}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 HA_TARGET = os.path.join(STATE, "ha-target")
 LIVE = os.path.join(STATE, "live")   # one file per session whose posts are read as they are posted   # forward's last Home Assistant target: repeat asks it
@@ -1421,6 +1422,21 @@ def clients():
         return []
 
 
+def speaker_screens():
+    """The Home Assistant speakers whose screen shows what read aloud says (their "When talking" is Read aloud), when
+    this machine reads on Home Assistant; [] otherwise, or when Home Assistant doesn't answer in time."""
+    target = settings().get("output") or ""
+    if not (target == "ha" or target.endswith(":ha")):
+        return []
+    cmd = (["hisho", "home-assistant", "screens"] if target == "ha" else
+           ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", target[:-3], "~/.local/bin/hisho home-assistant screens"])
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()] if out.returncode == 0 else []
+
+
 def fullscreen_focused():
     """True while the focused window is fullscreen (a game): the reader would
     take the mouse from it, so reading starts without opening it."""
@@ -1433,11 +1449,14 @@ def fullscreen_focused():
 def open_reader(auto=False):
     """Open the reader window (or bring it forward) where it was last left;
     the first time, at the bottom right of the Claude app. Opened by itself
-    (auto), it stays closed while a fullscreen window has focus."""
+    (auto), it stays closed while a fullscreen window has focus, or while a speaker's screen shows the words."""
     if not has_hyprland():
         return
     if auto and fullscreen_focused():
         log("reader window not opened: a fullscreen window has focus")
+        return
+    if auto and settings().get("screen_hides_reader") and (screens := speaker_screens()):
+        log(f"reader window not opened: {', '.join(screens)} shows it on its screen")
         return
     pos = read_json(READER_POS)
     win = next((c for c in clients() if c["class"] == READER), None)

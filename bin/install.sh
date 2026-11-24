@@ -45,14 +45,14 @@ addon = os.environ["ADDON"]
 home = os.path.expanduser("~")
 
 # Settings for read_aloud.py
-keys = ["voice", "speed", "opacity", "auto_open", "announce_thread", "auto_pause", "title_size", "output", "fallback_output",
+keys = ["voice", "speed", "opacity", "auto_open", "screen_hides_reader", "announce_thread", "auto_pause", "title_size", "output", "fallback_output",
         "cpu_threads", "use_gpu", "low_priority", "key_read", "key_repeat", "key_stop", "key_mute", "key_reader", "key_open", "key_pause", "key_rename", "key_skip"]
 conf = {}
 for k in keys:
     v = os.environ.get(f"HISHO_OPT_{k.upper()}")
     if v is None:
         continue
-    conf[k] = (v.lower() in ("1", "true", "yes", "on")) if k in ("auto_open", "announce_thread", "auto_pause", "low_priority") else (int(v) if k in ("speed", "opacity", "title_size") else v)
+    conf[k] = (v.lower() in ("1", "true", "yes", "on")) if k in ("auto_open", "screen_hides_reader", "announce_thread", "auto_pause", "low_priority") else (int(v) if k in ("speed", "opacity", "title_size") else v)
 path = f"{home}/.config/hisho/read-aloud.json"
 try:
     before = json.load(open(path))
