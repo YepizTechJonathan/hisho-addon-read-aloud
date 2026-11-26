@@ -77,7 +77,7 @@ model (sha256-checked) are downloaded on install into `~/.local/share/hisho/read
 
 ## How to use
 
-Once installed, every Claude Code reply is read aloud. Keys (Hyprland): Super+Alt+T reads the highlighted text, R repeats, X stops, M mutes, V shows or hides the reader window, O opens the thread, P pauses. Its page (**Add-ons > Read aloud**) sets the voice, speed, opacity and keys.
+Once installed, every Claude Code reply is read aloud. Keys (Hyprland): Super+Alt+T reads the highlighted text, R repeats, X stops, M mutes, V shows or hides the reader window, O opens the thread, P pauses (also with nothing playing: replies wait and resume reads them all; mute drops them). Its page (**Add-ons > Read aloud**) sets the voice, speed, opacity and keys.
 
 ### Replies from Claude on another machine
 

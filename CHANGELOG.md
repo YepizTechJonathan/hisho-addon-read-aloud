@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.0
+
+- Pause works with nothing playing too: replies that arrive while paused wait in the queue instead of starting, and resume (the pause key, the dashboard's Pause / resume) reads them all in order. Pausing before stepping out keeps every reply for later; mute still drops them. Reading something on purpose (the read key, Test) ends the pause. `status` shows `paused`.
+
 ## 0.15.0
 
 - New option `screen_hides_reader` (on): when the voice plays on Home Assistant and a speaker there shows the words on its screen (its "When talking" is Read aloud), the reader window doesn't open by itself; its key still opens it. Asks Hisho's `home-assistant screens` (needs Hisho 9a36d64+).

@@ -518,6 +518,12 @@ def enqueue(item):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(item, f)
     os.rename(tmp, os.path.join(QUEUE, f"{name}.json"))
+    if os.path.exists(PAUSED) and not worker_pid():
+        return   # paused with nothing playing: it waits for resume
+    start_worker()
+
+
+def start_worker():
     # Start a worker; if one is already reading it just exits and the
     # running one picks this up after the current text.
     subprocess.Popen([PY, os.path.abspath(__file__), "worker"],
@@ -1015,21 +1021,31 @@ def skip(source=None):
     return True
 
 
+def unpause():
+    try:
+        os.remove(PAUSED)
+    except OSError:
+        pass
+
+
 def pause(source="pause key"):
-    """Pause, or resume if paused. Replies that arrive meanwhile keep queuing. Every pause
-    and resume is logged with what asked for it."""
+    """Pause, or resume if paused. Replies that arrive meanwhile keep queuing, also when nothing
+    was playing (resume then reads them all). Every pause and resume is logged with what asked for it."""
     who = f"{source} [pid {os.getpid()}, {caller().removeprefix('command line ')}]"
     if os.path.exists(PAUSED):
         os.remove(PAUSED)
         log(f"resumed by: {who}")
+        if not worker_pid() and queued():
+            start_worker()   # what came in while paused with nothing playing
         return "resumed"
-    pid = worker_pid()
-    if not pid:
-        notify("Nothing is being read")
-        return ""
+    os.makedirs(STATE, exist_ok=True)
     with open(PAUSED, "w") as f:
         f.write(who)   # the worker logs any pause whose marker says nothing (made by something else)
     log(f"paused by: {who}")
+    pid = worker_pid()
+    if not pid:
+        notify("Read aloud paused: replies wait until you resume")
+        return "paused"
     try:
         os.kill(pid, signal.SIGUSR1)
     except OSError:
@@ -1967,7 +1983,7 @@ def status(outputs=None):
         sink, why = pick_output(outputs, settings().get("fallback_output") or "", (), settings().get("output") or "")
         default = next((s["label"] for s in outputs if s["default"]), "default")
         playing = {"output": sink["label"] if sink else (default if why != "none" else "none"), "why": why}
-    return {"muted": os.path.exists(MUTE), "reading": reading, "waiting": len(queued()), "opacity": opacity(),
+    return {"muted": os.path.exists(MUTE), "paused": os.path.exists(PAUSED), "reading": reading, "waiting": len(queued()), "opacity": opacity(),
             "output": playing.get("output"), "output_why": playing.get("why"),
             "outputs_in_error": [f"{s['label']}: {s['error'] or 'error'}" for s in outputs if s["state"] == "error"],
             "voice": voice_status(),
@@ -2035,6 +2051,7 @@ def main():
     elif cmd == "opacity":
         print(f"{set_opacity(sys.argv[2])}%")
     elif cmd == "test":
+        unpause()   # asked to read now
         enqueue({"source": "Read aloud test", "notify": False,
                  "segments": segments("This is the read aloud voice. If you can hear this, it works.")})
     elif cmd == "status":
@@ -2083,6 +2100,7 @@ def main():
                     break
         segs = segments(text)
         if segs:
+            unpause()   # asked to read now
             enqueue({"source": "", "segments": segs, "notify": False})
     else:
         sys.exit(__doc__)

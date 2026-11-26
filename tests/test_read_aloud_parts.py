@@ -1416,3 +1416,29 @@ def test_home_assistant_is_told_the_thread_and_its_colour(tmp_path, monkeypatch)
     colour = ra.band_hex("s1")
     assert re.fullmatch(r"#[0-9a-f]{6}", colour) and sent == [["--thread", "Fix read aloud's gaps", "--color", colour]]
     assert calls[0][-1].endswith(f"--thread 'Fix read aloud'\"'\"'s gaps' --color '{colour}'")   # quoted for ssh
+
+
+def test_pause_with_nothing_playing_holds_replies_until_resume(tmp_path, monkeypatch):
+    """Paused while idle (stepping out): replies wait in the queue, and resume reads them all."""
+    for name in ("PAUSED", "QUEUE", "STATE"):
+        monkeypatch.setattr(ra, name, str(tmp_path / name.lower()))
+    monkeypatch.setattr(ra, "log", lambda *a: None)
+    monkeypatch.setattr(ra, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(ra, "worker_pid", lambda: None)
+    started = []
+    monkeypatch.setattr(ra, "start_worker", lambda: started.append(1))
+    assert ra.pause("dashboard") == "paused"
+    ra.enqueue({"source": "a", "segments": [{"s": "One."}]})
+    ra.enqueue({"source": "b", "segments": [{"s": "Two."}]})
+    assert started == [] and len(ra.queued()) == 2
+    assert ra.pause("pause key") == "resumed"
+    assert started == [1] and not os.path.exists(ra.PAUSED)
+
+
+def test_without_pause_a_reply_starts_reading(tmp_path, monkeypatch):
+    for name in ("PAUSED", "QUEUE"):
+        monkeypatch.setattr(ra, name, str(tmp_path / name.lower()))
+    started = []
+    monkeypatch.setattr(ra, "start_worker", lambda: started.append(1))
+    ra.enqueue({"source": "a", "segments": [{"s": "One."}]})
+    assert started == [1]
