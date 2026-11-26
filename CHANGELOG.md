@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.1
+
+- Quiet during karaoke also holds for 3 minutes after a song was last seen playing (the gap between songs, a busy or restarting Pi), so replies no longer slip in between songs.
+
 ## 0.17.0
 
 - Quiet during karaoke: new setting quiet_while_playing (a PiKaraoke web address, e.g. http://192.168.1.136:5555). While it plays a song, replies forwarded to the readers are not read aloud (logged as quiet); paused or idle, reading works as before.

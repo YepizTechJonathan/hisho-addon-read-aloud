@@ -271,18 +271,28 @@ def post_item(data):
     return {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
 
 
+KARAOKE_SEEN = os.path.join(STATE, "karaoke-playing")   # touched each time a PiKaraoke is seen playing
+KARAOKE_GRACE = 180   # seconds after the last song is seen: the gap between songs, a slow answer, a restart
+
+
 def karaoke_playing():
-    """A PiKaraoke named in quiet_while_playing (its web address, several space-separated) is playing a song,
-    so nothing is read aloud over it."""
-    for url in str(settings().get("quiet_while_playing") or "").split():
+    """A PiKaraoke named in quiet_while_playing (its web address, several space-separated) is playing a song, or
+    was within the last few minutes (between songs), so nothing is read aloud over it."""
+    urls = str(settings().get("quiet_while_playing") or "").split()
+    for url in urls:
         try:
-            with urllib.request.urlopen(url.rstrip("/") + "/api/now_playing", timeout=1.5) as r:
+            with urllib.request.urlopen(url.rstrip("/") + "/api/now_playing", timeout=3) as r:
                 now = json.load(r)
             if now.get("now_playing") and not now.get("is_paused"):
+                os.makedirs(STATE, exist_ok=True)
+                open(KARAOKE_SEEN, "w").close()
                 return True
         except Exception:
-            pass   # off or unreachable: not playing
-    return False
+            pass   # off, busy or unreachable: the grace time below decides
+    try:
+        return bool(urls) and time.time() - os.path.getmtime(KARAOKE_SEEN) < KARAOKE_GRACE
+    except OSError:
+        return False
 
 
 def send(host, item):
