@@ -31,6 +31,7 @@ Replies are read in full. Settings come from the add-on's options, written by
 bin/install.sh to ~/.config/hisho/read-aloud.json.
 """
 import fcntl, glob, json, os, queue, re, select, shlex, shutil, signal, subprocess, sys, tempfile, threading, time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAY_IT = os.path.join(HERE, "bin", "say-it")
@@ -54,7 +55,7 @@ DEFAULTS = {"voice": "af_heart", "speed": 100, "opacity": 90, "auto_open": True,
             "key_mute": "SUPER + ALT + M", "key_reader": "SUPER + ALT + V", "key_open": "SUPER + ALT + O",
             "key_pause": "SUPER + ALT + P", "key_rename": "SUPER + ALT + N", "key_skip": "SUPER + ALT + J", "announce_thread": True, "auto_pause": True, "title_size": 2,
             "output": "", "fallback_output": "", "cpu_threads": "auto", "use_gpu": "auto", "low_priority": True,
-            "screen_hides_reader": True}
+            "screen_hides_reader": True, "quiet_while_playing": ""}
 LAST_THREAD = os.path.join(STATE, "last-thread")
 HA_TARGET = os.path.join(STATE, "ha-target")
 LIVE = os.path.join(STATE, "live")   # one file per session whose posts are read as they are posted   # forward's last Home Assistant target: repeat asks it
@@ -270,8 +271,25 @@ def post_item(data):
     return {"source": t["name"], "thread": t["key"], "url": t["url"], "asked": asked(data), "segments": segs}
 
 
+def karaoke_playing():
+    """A PiKaraoke named in quiet_while_playing (its web address, several space-separated) is playing a song,
+    so nothing is read aloud over it."""
+    for url in str(settings().get("quiet_while_playing") or "").split():
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + "/api/now_playing", timeout=1.5) as r:
+                now = json.load(r)
+            if now.get("now_playing") and not now.get("is_paused"):
+                return True
+        except Exception:
+            pass   # off or unreachable: not playing
+    return False
+
+
 def send(host, item):
     """Hand a reply to its readers (see forward)."""
+    if karaoke_playing():
+        log({"event": "quiet", "why": "karaoke playing", "thread": item.get("thread")})
+        return
     segs = item["segments"]
     for target in host.split(","):
         if target == "ha" or target.endswith(":ha"):

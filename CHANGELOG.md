@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0
+
+- Quiet during karaoke: new setting quiet_while_playing (a PiKaraoke web address, e.g. http://192.168.1.136:5555). While it plays a song, replies forwarded to the readers are not read aloud (logged as quiet); paused or idle, reading works as before.
+
 ## 0.16.0
 
 - Pause works with nothing playing too: replies that arrive while paused wait in the queue instead of starting, and resume (the pause key, the dashboard's Pause / resume) reads them all in order. Pausing before stepping out keeps every reply for later; mute still drops them. Reading something on purpose (the read key, Test) ends the pause. `status` shows `paused`.
